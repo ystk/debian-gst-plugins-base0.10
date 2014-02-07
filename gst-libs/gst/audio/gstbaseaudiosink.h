@@ -127,13 +127,24 @@ struct _GstBaseAudioSink {
   /*< private >*/
   GstBaseAudioSinkPrivate *priv;
 
-  gpointer _gst_reserved[GST_PADDING - 1];
+  union {
+    struct {
+      /*< protected >*/
+      /* with g_atomic_; currently rendering eos */
+      gboolean   eos_rendering;
+    } ABI;
+    gpointer _gst_reserved[GST_PADDING - 1];
+  } abidata;
 };
 
 /**
  * GstBaseAudioSinkClass:
  * @parent_class: the parent class.
  * @create_ringbuffer: create and return a #GstRingBuffer to write to.
+ * @payload: payload data in a format suitable to write to the sink. If no
+ *           payloading is required, returns a reffed copy of the original
+ *           buffer, else returns the payloaded buffer with all other metadata
+ *           copied. (Since: 0.10.36)
  *
  * #GstBaseAudioSink class. Override the vmethod to implement
  * functionality.
@@ -144,8 +155,12 @@ struct _GstBaseAudioSinkClass {
   /* subclass ringbuffer allocation */
   GstRingBuffer* (*create_ringbuffer)  (GstBaseAudioSink *sink);
 
+  /* subclass payloader */
+  GstBuffer*     (*payload)            (GstBaseAudioSink *sink,
+                                        GstBuffer        *buffer);
+
   /*< private >*/
-  gpointer _gst_reserved[GST_PADDING];
+  gpointer _gst_reserved[GST_PADDING - 1];
 };
 
 GType gst_base_audio_sink_get_type(void);
@@ -160,6 +175,20 @@ void       gst_base_audio_sink_set_slave_method       (GstBaseAudioSink *sink,
                                                        GstBaseAudioSinkSlaveMethod method);
 GstBaseAudioSinkSlaveMethod
            gst_base_audio_sink_get_slave_method       (GstBaseAudioSink *sink);
+
+void       gst_base_audio_sink_set_drift_tolerance    (GstBaseAudioSink *sink,
+                                                       gint64 drift_tolerance);
+gint64     gst_base_audio_sink_get_drift_tolerance    (GstBaseAudioSink *sink);
+
+void       gst_base_audio_sink_set_alignment_threshold (GstBaseAudioSink * sink,
+                                                        GstClockTime alignment_threshold);
+GstClockTime
+           gst_base_audio_sink_get_alignment_threshold (GstBaseAudioSink * sink);
+
+void       gst_base_audio_sink_set_discont_wait       (GstBaseAudioSink * sink,
+                                                       GstClockTime discont_wait);
+GstClockTime
+           gst_base_audio_sink_get_discont_wait       (GstBaseAudioSink * sink);
 
 G_END_DECLS
 

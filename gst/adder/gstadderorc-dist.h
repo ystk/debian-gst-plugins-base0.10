@@ -10,6 +10,10 @@
 extern "C" {
 #endif
 
+void gst_adder_orc_init (void);
+
+
+
 #ifndef _ORC_INTEGER_TYPEDEFS_
 #define _ORC_INTEGER_TYPEDEFS_
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
@@ -22,6 +26,7 @@ typedef uint8_t orc_uint8;
 typedef uint16_t orc_uint16;
 typedef uint32_t orc_uint32;
 typedef uint64_t orc_uint64;
+#define ORC_UINT64_C(x) UINT64_C(x)
 #elif defined(_MSC_VER)
 typedef signed __int8 orc_int8;
 typedef signed __int16 orc_int16;
@@ -31,6 +36,8 @@ typedef unsigned __int8 orc_uint8;
 typedef unsigned __int16 orc_uint16;
 typedef unsigned __int32 orc_uint32;
 typedef unsigned __int64 orc_uint64;
+#define ORC_UINT64_C(x) (x##Ui64)
+#define inline __inline
 #else
 #include <limits.h>
 typedef signed char orc_int8;
@@ -42,22 +49,33 @@ typedef unsigned int orc_uint32;
 #if INT_MAX == LONG_MAX
 typedef long long orc_int64;
 typedef unsigned long long orc_uint64;
+#define ORC_UINT64_C(x) (x##ULL)
 #else
 typedef long orc_int64;
 typedef unsigned long orc_uint64;
+#define ORC_UINT64_C(x) (x##UL)
 #endif
 #endif
-typedef union { orc_int32 i; float f; } orc_union32;
-typedef union { orc_int64 i; double f; } orc_union64;
+typedef union { orc_int16 i; orc_int8 x2[2]; } orc_union16;
+typedef union { orc_int32 i; float f; orc_int16 x2[2]; orc_int8 x4[4]; } orc_union32;
+typedef union { orc_int64 i; double f; orc_int32 x2[2]; float x2f[2]; orc_int16 x4[4]; } orc_union64;
 #endif
-
-void add_int32 (gint32 * d1, const gint32 * s1, int n);
-void add_int16 (gint16 * d1, const gint16 * s1, int n);
-void add_int8 (gint8 * d1, const gint8 * s1, int n);
-void add_uint32 (guint32 * d1, const guint32 * s1, int n);
-void add_uint16 (guint16 * d1, const guint16 * s1, int n);
-void add_uint8 (guint8 * d1, const guint8 * s1, int n);
-void add_float32 (float * d1, const float * s1, int n);
+#ifndef ORC_RESTRICT
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+#define ORC_RESTRICT restrict
+#elif defined(__GNUC__) && __GNUC__ >= 4
+#define ORC_RESTRICT __restrict__
+#else
+#define ORC_RESTRICT
+#endif
+#endif
+void add_int32 (gint32 * ORC_RESTRICT d1, const gint32 * ORC_RESTRICT s1, int n);
+void add_int16 (gint16 * ORC_RESTRICT d1, const gint16 * ORC_RESTRICT s1, int n);
+void add_int8 (gint8 * ORC_RESTRICT d1, const gint8 * ORC_RESTRICT s1, int n);
+void add_uint32 (guint32 * ORC_RESTRICT d1, const guint32 * ORC_RESTRICT s1, int n);
+void add_uint16 (guint16 * ORC_RESTRICT d1, const guint16 * ORC_RESTRICT s1, int n);
+void add_uint8 (guint8 * ORC_RESTRICT d1, const guint8 * ORC_RESTRICT s1, int n);
+void add_float32 (float * ORC_RESTRICT d1, const float * ORC_RESTRICT s1, int n);
 
 #ifdef __cplusplus
 }

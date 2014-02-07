@@ -1,3 +1,275 @@
+gst-plugins-base0.10 (0.10.36-1.1) unstable; urgency=low
+
+  * Non-maintainer upload.
+    + debian/patches/98_fix-ogg-flac-transition.patch:
+      - Fixes ogg->flac transition hangs (Closes: #668109)
+        Taken from upstream git.
+
+ -- Christoph Reiter <reiter.christoph@gmail.com>  Tue, 04 Dec 2012 11:07:40 +0100
+
+gst-plugins-base0.10 (0.10.36-1) unstable; urgency=low
+
+  * New upstream stable release, "Better":
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update for the stable release version.
+    + debian/rules:
+      - (Build-) depend on GStreamer core >= 0.10.36.
+
+ -- Sebastian Dröge <slomo@debian.org>  Tue, 21 Feb 2012 10:40:42 +0100
+
+gst-plugins-base0.10 (0.10.35.3-1) experimental; urgency=low
+
+  * New upstream pre-release.
+
+ -- Sebastian Dröge <slomo@debian.org>  Mon, 06 Feb 2012 09:49:55 +0100
+
+gst-plugins-base0.10 (0.10.35.2-3) experimental; urgency=low
+
+  * debian/control.in:
+    + Build-depend on automake (>= 1.10), autoconf (>= 2.60) and
+      libtool (>= 2.0) to make dh-autoreconf actually work.
+
+ -- Sebastian Dröge <slomo@debian.org>  Wed, 14 Dec 2011 09:48:15 +0100
+
+gst-plugins-base0.10 (0.10.35.2-2) experimental; urgency=low
+
+  * debian/libgstreamer-plugins-base.install:
+    + Add license translations file.
+
+ -- Sebastian Dröge <slomo@debian.org>  Mon, 12 Dec 2011 12:40:13 +0100
+
+gst-plugins-base0.10 (0.10.35.2-1) experimental; urgency=low
+
+  * New upstream pre-release:
+    + debian/rules,
+      debian/build-deps.in:
+      - Build-depend on GStreamer core >= 0.10.35.2.
+      - Build-depend on GLib >= 2.24.
+      - Build-depend on GTK+ 3.0.
+      - Build-depend on zlib.
+    + debian/patches/99_ltmain_as-needed.patch:
+      - Refresh to apply cleanly again.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update symbols file with new API.
+  * debian/rules:
+    + Remove all dependency_libs from the .la files.
+  * debian/control.in:
+    + Put GI package into section introspection.
+  * debian/build-deps.in,
+    debian/compat,
+    debian/control.in,
+    debian/gir1.2-gst-plugins-base.install,
+    debian/gstreamer-alsa.install,
+    debian/gstreamer-gnomevfs.install,
+    debian/gstreamer-plugins-base.install,
+    debian/gstreamer-x.install,
+    debian/libgstreamer-plugins-base-dev.install,
+    debian/libgstreamer-plugins-base.install,
+    debian/rules:
+    + Transition package to multi-arch (Closes: #647485).
+      Patch taken from the Ubuntu package.
+
+ -- Sebastian Dröge <slomo@debian.org>  Sun, 11 Dec 2011 19:27:10 +0100
+
+gst-plugins-base0.10 (0.10.35-1) unstable; urgency=low
+
+  * New upstream bugfix release, "Short Notice".
+
+ -- Sebastian Dröge <slomo@debian.org>  Thu, 23 Jun 2011 09:37:32 +0200
+
+gst-plugins-base0.10 (0.10.34-1) unstable; urgency=low
+
+  * New upstream bugfix release, "Lemmings":
+    + debian/rules:
+      - Require GStreamer core >= 0.10.34.
+
+ -- Sebastian Dröge <slomo@debian.org>  Sat, 14 May 2011 11:46:16 +0200
+
+gst-plugins-base0.10 (0.10.33-1) unstable; urgency=low
+
+  * New upstream release, "Relaxing Distractions":
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update version of new symbols to 0.10.33.
+    + debian/rules:
+      - Build-depend on GStreamer >= 0.10.33.
+
+ -- Sebastian Dröge <slomo@debian.org>  Tue, 10 May 2011 15:48:17 +0200
+
+gst-plugins-base0.10 (0.10.32.3-1) experimental; urgency=low
+
+  * New upstream pre-release.
+
+ -- Sebastian Dröge <slomo@debian.org>  Wed, 27 Apr 2011 15:27:37 +0200
+
+gst-plugins-base0.10 (0.10.32.2-1) experimental; urgency=low
+
+  [ Sebastian Dröge ]
+  * debian/control.in:
+    + Let the -dev package depend on the GIR package as required by
+      the new gobject-introspection policy.
+    + Only suggest gvfs, don't recommend it. GStreamer is the default
+      phonon backend nowadays and there's no reason to use gvfs
+      on a KDE desktop.
+
+  [ Alessandro Decina ]
+  * debian/build-deps.in:
+    + Add dependency on dh-autoreconf
+  * debian/rules:
+    + Include dh-autoreconf cdbs rule
+
+  [ Loïc Minier ]
+  * Drop dep on type-handling and use linux-any where possible.
+  * Reflow sed calls to avoid cat | sed or sed | sed constructs.
+
+  [ Sebastian Dröge ]
+  * New upstream pre-release:
+    + debian/rules:
+      - Build-depend on GStreamer core >= 0.10.32.2.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Add new API.
+
+ -- Sebastian Dröge <slomo@debian.org>  Sun, 17 Apr 2011 10:25:45 +0200
+
+gst-plugins-base0.10 (0.10.32-2) unstable; urgency=low
+
+  * Upload to unstable.
+  * debian/rules,
+    debian/gstreamer-plugins-base.install:
+    + Drop the video4linux plugin, recent Linux kernels only have v4l2.
+
+ -- Sebastian Dröge <slomo@debian.org>  Tue, 22 Mar 2011 14:17:10 +0100
+
+gst-plugins-base0.10 (0.10.32-1) experimental; urgency=low
+
+  * New upstream stable release, "Your Life You Like It Well":
+    + debian/rules:
+      - Require GStreamer >= 0.10.32.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update new symbols to the release version.
+
+ -- Sebastian Dröge <slomo@debian.org>  Sat, 22 Jan 2011 13:15:54 +0100
+
+gst-plugins-base0.10 (0.10.31.4-1) experimental; urgency=low
+
+  * New upstream pre-release:
+    + debian/rules:
+      - Require GStreamer >= 0.10.31.4.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update new symbols to the latest pre-release version.
+  * debian/rules:
+    + Use dh_perl -d to generate a dependency on perl-base only.
+      Change taken from the Ubuntu package.
+
+ -- Sebastian Dröge <slomo@debian.org>  Wed, 19 Jan 2011 21:11:51 +0100
+
+gst-plugins-base0.10 (0.10.31.3-1) experimental; urgency=low
+
+  * New upstream pre-release:
+    + debian/rules:
+      - Require GStreamer >= 0.10.31.3.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update new symbols to the latest pre-release version.
+
+ -- Sebastian Dröge <slomo@debian.org>  Thu, 13 Jan 2011 11:48:15 +0100
+
+gst-plugins-base0.10 (0.10.31.2-1) experimental; urgency=low
+
+  * New upstream pre-release:
+    + debian/rules,
+      debian/build-deps.in:
+      - Require GStreamer >= 0.10.31.2
+      - Require GLib >= 2.22
+    + debian/gstreamer-plugins-base.install:
+      - Add new encodebin plugin.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Add new API symbols.
+
+ -- Sebastian Dröge <slomo@debian.org>  Mon, 10 Jan 2011 14:56:10 +0100
+
+gst-plugins-base0.10 (0.10.31-2) experimental; urgency=low
+
+  [ Emilio Pozuelo Monfort ]
+  * debian/build-deps.in,
+    debian/rules:
+    + Use dpkg-vendor instead of lsb_release.
+
+  [ Sjoerd Simons ]
+  * Transition to gir1.2
+
+ -- Sjoerd Simons <sjoerd@debian.org>  Tue, 14 Dec 2010 22:09:46 +0000
+
+gst-plugins-base0.10 (0.10.31-1) experimental; urgency=low
+
+  * New upstream release, "Dance Like It's 1982":
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update symbols file.
+    + debian/rules:
+      - Require GStreamer >= 0.10.31.
+
+ -- Sebastian Dröge <slomo@debian.org>  Thu, 02 Dec 2010 10:32:35 +0100
+
+gst-plugins-base0.10 (0.10.30.5-2) experimental; urgency=low
+
+  * debian/build-deps.in:
+    + Drop gir-repository-dev build dependency. It's not needed and
+      only pulls in half of Gnome.
+  * New upstream pre-release.
+
+ -- Sebastian Dröge <slomo@debian.org>  Fri, 19 Nov 2010 11:29:57 +0100
+
+gst-plugins-base0.10 (0.10.30.4-1) experimental; urgency=low
+
+  * New upstream pre-release: 
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update symbols file.
+    + debian/gstreamer-plugins-base-apps.install:
+      - Add new gst-discoverer-0.10 tool.
+    + debian/control.in:
+      - Add ${shlibs:Depends} to the apps package.
+
+ -- Sebastian Dröge <slomo@debian.org>  Tue, 02 Nov 2010 08:44:13 +0100
+
+gst-plugins-base0.10 (0.10.30.3-1) experimental; urgency=low
+
+  * New upstream pre-release: 
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update symbols file.
+
+ -- Sebastian Dröge <slomo@debian.org>  Fri, 22 Oct 2010 19:56:44 +0200
+
+gst-plugins-base0.10 (0.10.30.2-1) experimental; urgency=low
+
+  * New upstream pre-release: 
+    + debian/rules,
+      debian/build-deps.in:
+      - Require GStreamer >= 0.10.30.1.
+      - Require ORC >= 0.4.11.
+      - Require Theora >= 1.1.
+    + debian/patches/0001-videoscale*:
+      - Dropped, merged upstream.
+    + debian/libgstreamer-plugins-base.symbols:
+      - Update symbols file with the new API.
+
+ -- Sebastian Dröge <slomo@debian.org>  Sat, 16 Oct 2010 11:17:36 +0200
+
+gst-plugins-base0.10 (0.10.30-3) experimental; urgency=low
+
+  * debian/build-deps.in:
+    + Add the epoch to the orc build dependency to get correct
+      dependencies (Closes: #597086).
+
+ -- Sebastian Dröge <slomo@debian.org>  Fri, 17 Sep 2010 13:22:25 +0200
+
+gst-plugins-base0.10 (0.10.30-2) experimental; urgency=low
+
+  * debian/patches/000[1-8]-videoscale*.patch:
+    + Patches from upstream GIT for videoscale to fix UYVY scaling,
+      improve scaling of interlaced content and add a add-borders
+      property (that defaults to the old behaviour) to add black
+      borders if necessary to keep the display aspect ratio.
+
+ -- Sebastian Dröge <slomo@debian.org>  Thu, 09 Sep 2010 11:04:17 +0200
+
 gst-plugins-base0.10 (0.10.30-1) unstable; urgency=low
 
   * New upstream stable release, "Difficult Birth":

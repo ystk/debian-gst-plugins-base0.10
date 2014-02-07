@@ -21,12 +21,9 @@
  * SECTION:gstbasertpaudiopayload
  * @short_description: Base class for audio RTP payloader
  *
- * <refsect2>
- * <para>
  * Provides a base class for audio RTP payloaders for frame or sample based
  * audio codecs (constant bitrate)
- * </para>
- * <para>
+ *
  * This class derives from GstBaseRTPPayload. It can be used for payloading
  * audio codecs. It will only work with constant bitrate codecs. It supports
  * both frame based and sample based codecs. It takes care of packing up the
@@ -38,7 +35,8 @@
  * equal to min-ptime (if set). If min-ptime is not set, any residual data is
  * sent in a last RTP packet. In the case of frame based codecs, the resulting
  * RTP packets always contain full frames.
- * </para>
+ *
+ * <refsect2>
  * <title>Usage</title>
  * <para>
  * To use this base class, your child element needs to call either
@@ -482,12 +480,11 @@ gst_base_rtp_audio_payload_push (GstBaseRTPAudioPayload * baseaudiopayload,
 
 static GstFlowReturn
 gst_base_rtp_audio_payload_push_buffer (GstBaseRTPAudioPayload *
-    baseaudiopayload, GstBuffer * buffer)
+    baseaudiopayload, GstBuffer * buffer, GstClockTime timestamp)
 {
   GstBaseRTPPayload *basepayload;
   GstBaseRTPAudioPayloadPrivate *priv;
   GstBuffer *outbuf;
-  GstClockTime timestamp;
   guint8 *payload;
   guint payload_len;
   GstFlowReturn ret;
@@ -496,7 +493,6 @@ gst_base_rtp_audio_payload_push_buffer (GstBaseRTPAudioPayload *
   basepayload = GST_BASE_RTP_PAYLOAD (baseaudiopayload);
 
   payload_len = GST_BUFFER_SIZE (buffer);
-  timestamp = GST_BUFFER_TIMESTAMP (buffer);
 
   GST_DEBUG_OBJECT (baseaudiopayload, "Pushing %d bytes ts %" GST_TIME_FORMAT,
       payload_len, GST_TIME_ARGS (timestamp));
@@ -607,7 +603,9 @@ gst_base_rtp_audio_payload_flush (GstBaseRTPAudioPayload * baseaudiopayload,
      * anything. */
     buffer = gst_adapter_take_buffer (adapter, payload_len);
 
-    ret = gst_base_rtp_audio_payload_push_buffer (baseaudiopayload, buffer);
+    ret =
+        gst_base_rtp_audio_payload_push_buffer (baseaudiopayload, buffer,
+        timestamp);
   } else {
     /* create buffer to hold the payload */
     outbuf = gst_rtp_buffer_new_allocate (payload_len, 0, 0);
@@ -814,22 +812,21 @@ gst_base_rtp_audio_payload_handle_buffer (GstBaseRTPPayload *
   guint align;
   guint size;
   gboolean discont;
+  GstClockTime timestamp;
 
   ret = GST_FLOW_OK;
 
   payload = GST_BASE_RTP_AUDIO_PAYLOAD_CAST (basepayload);
   priv = payload->priv;
 
+  timestamp = GST_BUFFER_TIMESTAMP (buffer);
   discont = GST_BUFFER_IS_DISCONT (buffer);
   if (discont) {
-    GstClockTime timestamp;
 
     GST_DEBUG_OBJECT (payload, "Got DISCONT");
     /* flush everything out of the adapter, mark DISCONT */
     ret = gst_base_rtp_audio_payload_flush (payload, -1, -1);
     priv->discont = TRUE;
-
-    timestamp = GST_BUFFER_TIMESTAMP (buffer);
 
     /* get the distance between the timestamp gap and produce the same gap in
      * the RTP timestamps */
@@ -842,7 +839,7 @@ gst_base_rtp_audio_payload_handle_buffer (GstBaseRTPPayload *
         GstClockTime diff;
         guint64 bytes;
         /* we're only going to apply a positive gap, otherwise we let the marker
-         * bit do its thing. simply convert to bytes and add the the current
+         * bit do its thing. simply convert to bytes and add the current
          * offset */
         diff = timestamp - priv->last_timestamp;
         bytes = priv->time_to_bytes (payload, diff);
@@ -878,7 +875,7 @@ gst_base_rtp_audio_payload_handle_buffer (GstBaseRTPPayload *
     /* If buffer fits on an RTP packet, let's just push it through
      * this will check against max_ptime and max_mtu */
     GST_DEBUG_OBJECT (payload, "Fast packet push");
-    ret = gst_base_rtp_audio_payload_push_buffer (payload, buffer);
+    ret = gst_base_rtp_audio_payload_push_buffer (payload, buffer, timestamp);
   } else {
     /* push the buffer in the adapter */
     gst_adapter_push (priv->adapter, buffer);

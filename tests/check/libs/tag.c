@@ -2,7 +2,7 @@
  *
  * unit tests for the tag support library
  *
- * Copyright (C) 2006-2009 Tim-Philipp Müller <tim centricular net>
+ * Copyright (C) 2006-2011 Tim-Philipp Müller <tim centricular net>
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Library General Public
@@ -29,6 +29,7 @@
 #include <gst/tag/tag.h>
 #include <gst/base/gstbytewriter.h>
 #include <string.h>
+#include <locale.h>
 
 GST_START_TEST (test_parse_extended_comment)
 {
@@ -178,7 +179,7 @@ GST_END_TEST;
         "%f does not match expected %f", ___d, d);                         \
   }
 
-GST_START_TEST (test_muscibrainz_tag_registration)
+GST_START_TEST (test_musicbrainz_tag_registration)
 {
   GstTagList *list;
 
@@ -577,6 +578,7 @@ GST_START_TEST (test_id3_tags)
     const gchar *genre;
 
     genre = gst_tag_id3_genre_get (i);
+    GST_LOG ("genre: %s", genre);
     fail_unless (genre != NULL);
   }
 
@@ -750,6 +752,192 @@ GST_START_TEST (test_language_utils)
 
 GST_END_TEST;
 
+#define SPECIFIC_L "http://creativecommons.org/licenses/by-nc-sa/2.5/scotland/"
+#define GENERIC_L "http://creativecommons.org/licenses/by/1.0/"
+#define DERIVED_L "http://creativecommons.org/licenses/sampling+/1.0/tw/"
+
+GST_START_TEST (test_license_utils)
+{
+  GHashTable *ht;
+  GError *err = NULL;
+  gchar **liblicense_refs, **r;
+  gchar **lrefs, **l;
+  gchar *path, *data = NULL;
+  gsize data_len;
+
+  gst_debug_set_threshold_for_name ("tag-licenses", GST_LEVEL_NONE);
+
+  /* test jurisdiction-specific license */
+  fail_unless_equals_int (gst_tag_get_license_flags (SPECIFIC_L), 0x01010703);
+  fail_unless_equals_string (gst_tag_get_license_nick (SPECIFIC_L),
+      "CC BY-NC-SA 2.5 SCOTLAND");
+  fail_unless_equals_string (gst_tag_get_license_version (SPECIFIC_L), "2.5");
+  fail_unless_equals_string (gst_tag_get_license_jurisdiction (SPECIFIC_L),
+      "scotland");
+
+  g_setenv ("GST_TAG_LICENSE_TRANSLATIONS_LANG", "C", TRUE);
+  fail_unless_equals_string (gst_tag_get_license_title (SPECIFIC_L),
+      "Attribution-NonCommercial-ShareAlike");
+  fail_unless (gst_tag_get_license_description (SPECIFIC_L) == NULL);
+
+  /* test generic license */
+  fail_unless_equals_int (gst_tag_get_license_flags (GENERIC_L), 0x01000307);
+  fail_unless_equals_string (gst_tag_get_license_nick (GENERIC_L), "CC BY 1.0");
+  fail_unless_equals_string (gst_tag_get_license_version (GENERIC_L), "1.0");
+  fail_unless (gst_tag_get_license_jurisdiction (GENERIC_L) == NULL);
+
+  g_setenv ("GST_TAG_LICENSE_TRANSLATIONS_LANG", "C", TRUE);
+  fail_unless_equals_string (gst_tag_get_license_title (GENERIC_L),
+      "Attribution");
+  fail_unless_equals_string (gst_tag_get_license_description (GENERIC_L),
+      "You must attribute the work in the manner specified by the author or licensor.");
+
+#ifdef ENABLE_NLS
+  g_setenv ("GST_TAG_LICENSE_TRANSLATIONS_LANG", "fr", TRUE);
+  fail_unless_equals_string (gst_tag_get_license_title (GENERIC_L),
+      "Paternité");
+  fail_unless_equals_string (gst_tag_get_license_description (GENERIC_L),
+      "L'offrant autorise les autres à reproduire, distribuer et communiquer cette création au public. En échange, les personnes qui acceptent ce contrat doivent citer le nom de l'auteur original.");
+#endif
+
+  /* test derived (for a certain jurisdiction) license */
+  fail_unless_equals_int (gst_tag_get_license_flags (DERIVED_L), 0x0100030d);
+  fail_unless_equals_string (gst_tag_get_license_nick (DERIVED_L),
+      "CC SAMPLING+ 1.0 TW");
+  fail_unless_equals_string (gst_tag_get_license_version (DERIVED_L), "1.0");
+  fail_unless_equals_string (gst_tag_get_license_jurisdiction (DERIVED_L),
+      "tw");
+
+  g_setenv ("GST_TAG_LICENSE_TRANSLATIONS_LANG", "C", TRUE);
+  fail_unless_equals_string (gst_tag_get_license_title (DERIVED_L),
+      "Sampling Plus");
+  fail_unless_equals_string (gst_tag_get_license_description (GENERIC_L),
+      "You must attribute the work in the manner specified by the author or licensor.");
+
+  /* test all we know about */
+  lrefs = gst_tag_get_licenses ();
+  fail_unless (lrefs != NULL);
+  fail_unless (*lrefs != NULL);
+
+  GST_INFO ("%d licenses", g_strv_length (lrefs));
+  fail_unless (g_strv_length (lrefs) >= 376);
+
+  ht = g_hash_table_new (g_str_hash, g_str_equal);
+
+  for (l = lrefs; l != NULL && *l != NULL; ++l) {
+    const gchar *ref, *nick, *title, *desc G_GNUC_UNUSED;
+
+    ref = (const gchar *) *l;
+    nick = gst_tag_get_license_nick (ref);
+    title = gst_tag_get_license_title (ref);
+    desc = gst_tag_get_license_description (ref);
+    fail_unless (nick != NULL, "no nick for license '%s'", ref);
+    fail_unless (title != NULL, "no title for license '%s'", ref);
+    GST_LOG ("ref: %s [nick %s]", ref, (nick) ? nick : "none");
+    GST_TRACE ("    %s : %s", title, (desc) ? desc : "(no description)");
+
+    /* make sure the list contains no duplicates */
+    fail_if (g_hash_table_lookup (ht, (gpointer) ref) != NULL);
+    g_hash_table_insert (ht, (gpointer) ref, (gpointer) "meep");
+  }
+  g_hash_table_destroy (ht);
+
+  /* trailing slash shouldn't make a difference */
+  fail_unless_equals_int (gst_tag_get_license_flags
+      ("http://creativecommons.org/licenses/by-nd/1.0/"),
+      gst_tag_get_license_flags
+      ("http://creativecommons.org/licenses/by-nd/1.0"));
+  fail_unless_equals_string (gst_tag_get_license_nick
+      ("http://creativecommons.org/licenses/by-nd/1.0/"),
+      gst_tag_get_license_nick
+      ("http://creativecommons.org/licenses/by-nd/1.0"));
+  fail_unless_equals_int (gst_tag_get_license_flags
+      ("http://creativecommons.org/licenses/by-nd/2.5/ca/"),
+      gst_tag_get_license_flags
+      ("http://creativecommons.org/licenses/by-nd/2.5/ca"));
+  fail_unless_equals_string (gst_tag_get_license_nick
+      ("http://creativecommons.org/licenses/by-nd/2.5/ca/"),
+      gst_tag_get_license_nick
+      ("http://creativecommons.org/licenses/by-nd/2.5/ca"));
+
+  /* unknown licenses */
+  fail_unless (gst_tag_get_license_nick
+      ("http://creativecommons.org/licenses/by-nd/25/ca/") == NULL);
+  fail_unless (gst_tag_get_license_flags
+      ("http://creativecommons.org/licenses/by-nd/25/ca") == 0);
+  fail_unless (gst_tag_get_license_jurisdiction
+      ("http://creativecommons.org/licenses/by-nd/25/ca/") == NULL);
+  fail_unless (gst_tag_get_license_jurisdiction
+      ("http://creativecommons.org/licenses/by-nd/25/ca") == NULL);
+  fail_unless (gst_tag_get_license_title
+      ("http://creativecommons.org/licenses/by-nd/25/ca") == NULL);
+  fail_unless (gst_tag_get_license_jurisdiction
+      ("http://creativecommons.org/licenses/by-nd/25/ca") == NULL);
+
+  /* unknown prefixes even */
+  fail_unless (gst_tag_get_license_nick
+      ("http://copycats.org/licenses/by-nd/2.5/ca/") == NULL);
+  fail_unless (gst_tag_get_license_flags
+      ("http://copycats.org/licenses/by-nd/2.5/ca") == 0);
+  fail_unless (gst_tag_get_license_jurisdiction
+      ("http://copycats.org/licenses/by-nd/2.5/ca/") == NULL);
+  fail_unless (gst_tag_get_license_title
+      ("http://copycats.org/licenses/by-nd/2.5/ca/") == NULL);
+  fail_unless (gst_tag_get_license_description
+      ("http://copycats.org/licenses/by-nd/2.5/ca/") == NULL);
+
+  /* read list of liblicense refs from file */
+  path = g_build_filename (GST_TEST_FILES_PATH, "license-uris", NULL);
+  GST_LOG ("reading file '%s'", path);
+  if (!g_file_get_contents (path, &data, &data_len, &err)) {
+    g_error ("error loading test file: %s", err->message);
+  }
+
+  while (data_len > 0 && data[data_len - 1] == '\n') {
+    data[--data_len] = '\0';
+  }
+
+  liblicense_refs = g_strsplit (data, "\n", -1);
+  g_free (data);
+  g_free (path);
+
+  fail_unless (g_strv_length (lrefs) >= g_strv_length (liblicense_refs));
+
+  for (r = liblicense_refs; r != NULL && *r != NULL; ++r) {
+    GstTagLicenseFlags flags;
+    const gchar *version, *nick, *jur;
+    const gchar *ref = *r;
+
+    GST_LOG ("liblicense ref: %s", ref);
+
+    version = gst_tag_get_license_version (ref);
+    if (strstr (ref, "publicdomain") != NULL)
+      fail_unless (version == NULL);
+    else
+      fail_unless (version != NULL, "expected version for license %s", ref);
+
+    flags = gst_tag_get_license_flags (ref);
+    fail_unless (flags != 0, "expected non-zero flags for license %s", ref);
+
+    nick = gst_tag_get_license_nick (ref);
+    fail_unless (nick != NULL, "expected nick for license %s", ref);
+
+    jur = gst_tag_get_license_jurisdiction (ref);
+    if (g_str_has_suffix (ref, "de/")) {
+      fail_unless_equals_string (jur, "de");
+    } else if (g_str_has_suffix (ref, "scotland")) {
+      fail_unless_equals_string (jur, "scotland");
+    } else if (g_str_has_suffix (ref, ".0") || g_str_has_suffix (ref, ".1")) {
+      fail_unless (jur == NULL);
+    }
+  }
+
+  g_strfreev (liblicense_refs);
+  g_strfreev (lrefs);
+}
+
+GST_END_TEST;
+
 GST_START_TEST (test_xmp_formatting)
 {
   GstTagList *list;
@@ -787,14 +975,21 @@ GST_START_TEST (test_xmp_parsing)
 {
   GstTagList *list;
   GstBuffer *buf;
-  guint i, result_size;
+  guint i, j, result_size;
   gchar *text;
   const gchar *xmp_header =
       "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>"
       "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"GStreamer\">"
       "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\">";
-  const gchar *xmp_footer =
-      "</rdf:RDF>" "</x:xmpmeta>" "<?xpacket end=\"r\"?>\n";
+
+  /* We used to write an extra trailing \n after the footer, keep compatibility
+   * with our old generated media by checking that it still can be parsed */
+  const gchar *xmp_footers[] = {
+    "</rdf:RDF>" "</x:xmpmeta>" "<?xpacket end=\"r\"?>",
+    "</rdf:RDF>" "</x:xmpmeta>" "<?xpacket end=\"r\"?>\n",
+    NULL
+  };
+
   struct
   {
     const gchar *xmp_data;
@@ -816,43 +1011,46 @@ GST_START_TEST (test_xmp_parsing)
   /* test data */
   buf = gst_buffer_new ();
 
+  j = 0;
   i = 0;
-  while (test_data[i].xmp_data) {
-    GST_DEBUG ("trying test-data %u", i);
+  while (xmp_footers[j]) {
+    while (test_data[i].xmp_data) {
+      GST_DEBUG ("trying test-data %u", i);
 
-    text = g_strconcat (xmp_header, test_data[i].xmp_data, xmp_footer, NULL);
-    GST_BUFFER_DATA (buf) = (guint8 *) text;
-    GST_BUFFER_SIZE (buf) = strlen (text) + 1;
+      text =
+          g_strconcat (xmp_header, test_data[i].xmp_data, xmp_footers[j], NULL);
+      GST_BUFFER_DATA (buf) = (guint8 *) text;
+      GST_BUFFER_SIZE (buf) = strlen (text) + 1;
 
+      list = gst_tag_list_from_xmp_buffer (buf);
+      if (test_data[i].result_size >= 0) {
+        fail_unless (list != NULL);
 
-    list = gst_tag_list_from_xmp_buffer (buf);
-    if (test_data[i].result_size >= 0) {
-      fail_unless (list != NULL);
+        result_size = gst_structure_n_fields ((GstStructure *) list);
+        fail_unless (result_size == test_data[i].result_size);
 
-      result_size = gst_structure_n_fields ((GstStructure *) list);
-      fail_unless (result_size == test_data[i].result_size);
-
-      /* check the taglist content */
-      switch (test_data[i].result_test) {
-        case 0:
-          ASSERT_TAG_LIST_HAS_STRING (list, "description", "test");
-          break;
-        default:
-          break;
+        /* check the taglist content */
+        switch (test_data[i].result_test) {
+          case 0:
+            ASSERT_TAG_LIST_HAS_STRING (list, "description", "test");
+            break;
+          default:
+            break;
+        }
       }
-    }
-    if (list)
-      gst_tag_list_free (list);
+      if (list)
+        gst_tag_list_free (list);
 
-    g_free (text);
-    i++;
+      g_free (text);
+      i++;
+    }
+    j++;
   }
 
   gst_buffer_unref (buf);
 }
 
 GST_END_TEST;
-
 
 static void
 tag_list_equals (GstTagList * taglist, GstTagList * taglist2)
@@ -870,6 +1068,7 @@ tag_list_equals (GstTagList * taglist, GstTagList * taglist2)
   n_recv = gst_structure_n_fields (taglist2);
   n_sent = gst_structure_n_fields (taglist);
   fail_unless (n_recv == n_sent);
+  fail_unless (n_sent > 0);
 
   /* FIXME: compare taglist values */
   for (i = 0; i < n_sent; i++) {
@@ -913,147 +1112,234 @@ tag_list_equals (GstTagList * taglist, GstTagList * taglist2)
 }
 
 static void
-do_xmp_tag_serialization_deserialization (const gchar * gsttag, GValue * value)
+do_xmp_tag_serialization_deserialization (GstTagList * taglist,
+    const gchar ** schemas)
 {
-  GstTagList *taglist = gst_tag_list_new ();
   GstTagList *taglist2;
   GstBuffer *buf;
 
-  gst_tag_list_add_value (taglist, GST_TAG_MERGE_REPLACE, gsttag, value);
-
-  buf = gst_tag_list_to_xmp_buffer (taglist, TRUE);
+  buf = gst_tag_list_to_xmp_buffer_full (taglist, TRUE, schemas);
   taglist2 = gst_tag_list_from_xmp_buffer (buf);
 
   tag_list_equals (taglist, taglist2);
 
   gst_buffer_unref (buf);
-  gst_tag_list_free (taglist);
   gst_tag_list_free (taglist2);
+}
+
+static void
+do_simple_xmp_tag_serialization_deserialization (const gchar * gsttag,
+    GValue * value)
+{
+  GstTagList *taglist = gst_tag_list_new ();
+
+  gst_tag_list_add_value (taglist, GST_TAG_MERGE_REPLACE, gsttag, value);
+
+  do_xmp_tag_serialization_deserialization (taglist, NULL);
+  gst_tag_list_free (taglist);
 }
 
 GST_START_TEST (test_xmp_tags_serialization_deserialization)
 {
   GValue value = { 0 };
   GDate *date;
+  GstDateTime *datetime;
+
+  gst_tag_register_musicbrainz_tags ();
 
   g_value_init (&value, G_TYPE_STRING);
   g_value_set_static_string (&value, "my string");
-  do_xmp_tag_serialization_deserialization (GST_TAG_ARTIST, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_COPYRIGHT, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_DESCRIPTION, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_KEYWORDS, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_TITLE, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_VIDEO_CODEC, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_COUNTRY,
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_ARTIST, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_COPYRIGHT, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DESCRIPTION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_KEYWORDS, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_TITLE, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_VIDEO_CODEC, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_COUNTRY,
       &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_CITY, &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_SUBLOCATION,
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_CITY,
       &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_DEVICE_MANUFACTURER,
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_SUBLOCATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DEVICE_MANUFACTURER,
       &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_DEVICE_MODEL, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DEVICE_MODEL,
+      &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_APPLICATION_NAME,
+      &value);
 
   g_value_set_static_string (&value, "rotate-0");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-0");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "rotate-180");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-180");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-270");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "rotate-90");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-90");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "rotate-270");
-  do_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
 
   g_value_unset (&value);
   g_value_init (&value, G_TYPE_DOUBLE);
 
   g_value_set_double (&value, 0.0);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LATITUDE,
-      &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LONGITUDE,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LATITUDE, &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LONGITUDE, &value);
   g_value_set_double (&value, 10.5);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LATITUDE,
-      &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LONGITUDE,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LATITUDE, &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LONGITUDE, &value);
   g_value_set_double (&value, -32.375);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LATITUDE,
-      &value);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LONGITUDE,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LATITUDE, &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LONGITUDE, &value);
 
   g_value_set_double (&value, 0);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_ELEVATION,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_ELEVATION, &value);
   g_value_set_double (&value, 100);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_ELEVATION,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_ELEVATION, &value);
   g_value_set_double (&value, 500.25);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_ELEVATION,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_ELEVATION, &value);
   g_value_set_double (&value, -12.75);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_ELEVATION,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_ELEVATION, &value);
 
   g_value_set_double (&value, 0.0);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, &value);
   g_value_set_double (&value, 10.0);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, &value);
   g_value_set_double (&value, 786.125);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, &value);
   g_value_set_double (&value, -2.5);
-  do_xmp_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED,
-      &value);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, &value);
 
   g_value_set_double (&value, 0.0);
-  do_xmp_tag_serialization_deserialization
+  do_simple_xmp_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION, &value);
   g_value_set_double (&value, 180.0);
-  do_xmp_tag_serialization_deserialization
+  do_simple_xmp_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION, &value);
   g_value_set_double (&value, 359.99);
-  do_xmp_tag_serialization_deserialization
+  do_simple_xmp_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION, &value);
 
   g_value_set_double (&value, 0.0);
-  do_xmp_tag_serialization_deserialization
+  do_simple_xmp_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION, &value);
   g_value_set_double (&value, 90.0);
-  do_xmp_tag_serialization_deserialization
+  do_simple_xmp_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION, &value);
   g_value_set_double (&value, 359.99);
-  do_xmp_tag_serialization_deserialization
+  do_simple_xmp_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION, &value);
+
+  g_value_set_double (&value, 0.0);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, &value);
+  g_value_set_double (&value, 1.0);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, &value);
+  g_value_set_double (&value, -2.5);
+  do_simple_xmp_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, &value);
   g_value_unset (&value);
 
   g_value_init (&value, GST_TYPE_DATE);
   date = g_date_new_dmy (22, 3, 2010);
   gst_value_set_date (&value, date);
   g_date_free (date);
-  do_xmp_tag_serialization_deserialization (GST_TAG_DATE, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE, &value);
   g_value_unset (&value);
 
   g_value_init (&value, G_TYPE_UINT);
   g_value_set_uint (&value, 0);
-  do_xmp_tag_serialization_deserialization (GST_TAG_USER_RATING, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_USER_RATING, &value);
   g_value_set_uint (&value, 100);
-  do_xmp_tag_serialization_deserialization (GST_TAG_USER_RATING, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_USER_RATING, &value);
   g_value_set_uint (&value, 22);
-  do_xmp_tag_serialization_deserialization (GST_TAG_USER_RATING, &value);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_USER_RATING, &value);
+  g_value_unset (&value);
+
+  g_value_init (&value, GST_TYPE_DATE_TIME);
+  datetime = gst_date_time_new (0, 2010, 6, 22, 12, 5, 10);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  datetime = gst_date_time_new (0, 2010, 6, 22, 12, 5, 10.000125);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  datetime = gst_date_time_new (0, 2010, 6, 22, 12, 5, 10.000001);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  datetime = gst_date_time_new (0, 2010, 6, 22, 12, 5, 10.123456);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  datetime = gst_date_time_new (-3, 2010, 6, 22, 12, 5, 10.123456);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  datetime = gst_date_time_new (5, 2010, 6, 22, 12, 5, 10.123456);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  datetime = gst_date_time_new_local_time (2010, 12, 2, 12, 5, 10.000043);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_xmp_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
   g_value_unset (&value);
 }
 
 GST_END_TEST;
+
+
+GST_START_TEST (test_xmp_compound_tags)
+{
+  const gchar *schemas[] = { "Iptc4xmpExt", NULL };
+  GstTagList *taglist = gst_tag_list_new ();
+
+  gst_tag_list_add (taglist, GST_TAG_MERGE_APPEND, GST_TAG_KEYWORDS, "k1",
+      GST_TAG_KEYWORDS, "k2", GST_TAG_TITLE, "title", GST_TAG_KEYWORDS, "k3",
+      NULL);
+  do_xmp_tag_serialization_deserialization (taglist, NULL);
+  gst_tag_list_free (taglist);
+
+  taglist = gst_tag_list_new ();
+  gst_tag_list_add (taglist, GST_TAG_MERGE_APPEND, GST_TAG_GEO_LOCATION_COUNTRY,
+      "Brazil", GST_TAG_GEO_LOCATION_CITY, "Campina Grande", NULL);
+  do_xmp_tag_serialization_deserialization (taglist, schemas);
+  gst_tag_list_free (taglist);
+}
+
+GST_END_TEST;
+
 
 GST_START_TEST (test_exif_parsing)
 {
@@ -1099,16 +1385,14 @@ GST_END_TEST;
 
 
 static void
-do_exif_tag_serialization_deserialization (const gchar * gsttag, GValue * value)
+do_exif_tag_serialization_deserialization (GstTagList * taglist)
 {
-  GstTagList *taglist = gst_tag_list_new ();
   GstTagList *taglist2;
   GstBuffer *buf;
 
-  gst_tag_list_add_value (taglist, GST_TAG_MERGE_REPLACE, gsttag, value);
-
   /* LE */
   buf = gst_tag_list_to_exif_buffer (taglist, G_LITTLE_ENDIAN, 0);
+  GST_MEMDUMP ("Exif tag", GST_BUFFER_DATA (buf), GST_BUFFER_SIZE (buf));
   taglist2 = gst_tag_list_from_exif_buffer (buf, G_LITTLE_ENDIAN, 0);
   gst_buffer_unref (buf);
 
@@ -1117,6 +1401,7 @@ do_exif_tag_serialization_deserialization (const gchar * gsttag, GValue * value)
 
   /* BE */
   buf = gst_tag_list_to_exif_buffer (taglist, G_BIG_ENDIAN, 0);
+  GST_MEMDUMP ("Exif tag", GST_BUFFER_DATA (buf), GST_BUFFER_SIZE (buf));
   taglist2 = gst_tag_list_from_exif_buffer (buf, G_BIG_ENDIAN, 0);
   gst_buffer_unref (buf);
 
@@ -1130,86 +1415,415 @@ do_exif_tag_serialization_deserialization (const gchar * gsttag, GValue * value)
 
   tag_list_equals (taglist, taglist2);
   gst_tag_list_free (taglist2);
+}
+
+static void
+do_simple_exif_tag_serialization_deserialization (const gchar * gsttag,
+    GValue * value)
+{
+  GstTagList *taglist = gst_tag_list_new ();
+
+  gst_tag_list_add_value (taglist, GST_TAG_MERGE_REPLACE, gsttag, value);
+  do_exif_tag_serialization_deserialization (taglist);
 
   gst_tag_list_free (taglist);
 }
 
+/*
+ * Adds tags from multiple ifd tables and tries serializing them
+ */
+GST_START_TEST (test_exif_multiple_tags)
+{
+  GstTagList *taglist;
+  GstDateTime *datetime;
+  GValue value = { 0 };
+
+  gst_tag_register_musicbrainz_tags ();
+
+  taglist = gst_tag_list_new_full (GST_TAG_ARTIST, "artist",
+      GST_TAG_DEVICE_MANUFACTURER, "make",
+      GST_TAG_DEVICE_MODEL, "model", GST_TAG_GEO_LOCATION_LATITUDE, 45.5,
+      GST_TAG_GEO_LOCATION_LONGITUDE, -10.25,
+      GST_TAG_IMAGE_HORIZONTAL_PPI, 300.0,
+      GST_TAG_IMAGE_VERTICAL_PPI, 300.0, NULL);
+
+  g_value_init (&value, GST_TYPE_DATE_TIME);
+  datetime = gst_date_time_new_local_time (2010, 6, 22, 12, 5, 10);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  gst_tag_list_add_value (taglist, GST_TAG_MERGE_APPEND, GST_TAG_DATE_TIME,
+      &value);
+  g_value_unset (&value);
+
+  do_exif_tag_serialization_deserialization (taglist);
+
+  gst_tag_list_free (taglist);
+}
+
+GST_END_TEST;
+
+
 GST_START_TEST (test_exif_tags_serialization_deserialization)
 {
   GValue value = { 0 };
+  GstDateTime *datetime = NULL;
+  GstBuffer *buf = NULL;
+  gint i;
+  GstTagList *taglist;
+
+  gst_tag_register_musicbrainz_tags ();
 
   g_value_init (&value, G_TYPE_STRING);
   g_value_set_static_string (&value, "my string");
-  do_exif_tag_serialization_deserialization (GST_TAG_COPYRIGHT, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_COPYRIGHT, &value);
   g_value_set_static_string (&value, "ty");
-  do_exif_tag_serialization_deserialization (GST_TAG_ARTIST, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_ARTIST, &value);
+  g_value_set_static_string (&value, "Company Software 1.2b (info)");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_APPLICATION_NAME,
+      &value);
+
+  /* non ascii chars */
+  g_value_set_static_string (&value, "AaÄäEeËëIiÏïOoÖöUuÜü");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_ARTIST, &value);
+  g_value_set_static_string (&value, "Äë");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_ARTIST, &value);
 
   /* image orientation tests */
   g_value_set_static_string (&value, "rotate-0");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-0");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "rotate-180");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-180");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-270");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "rotate-90");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "flip-rotate-90");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
   g_value_set_static_string (&value, "rotate-270");
-  do_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION, &value);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_IMAGE_ORIENTATION,
+      &value);
+
+  /* exposure program */
+  g_value_set_static_string (&value, "undefined");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "manual");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "normal");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "aperture-priority");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "shutter-priority");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "creative");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "action");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "portrait");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+  g_value_set_static_string (&value, "landscape");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, &value);
+
+  /* exposure mode */
+  g_value_set_static_string (&value, "auto-exposure");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_MODE, &value);
+  g_value_set_static_string (&value, "manual-exposure");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_MODE, &value);
+  g_value_set_static_string (&value, "auto-bracket");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_MODE, &value);
+
+  /* scene capture type */
+  g_value_set_static_string (&value, "standard");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SCENE_CAPTURE_TYPE, &value);
+  g_value_set_static_string (&value, "portrait");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SCENE_CAPTURE_TYPE, &value);
+  g_value_set_static_string (&value, "landscape");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SCENE_CAPTURE_TYPE, &value);
+  g_value_set_static_string (&value, "night-scene");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SCENE_CAPTURE_TYPE, &value);
+
+  g_value_set_static_string (&value, "none");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_GAIN_ADJUSTMENT, &value);
+  g_value_set_static_string (&value, "high-gain-up");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_GAIN_ADJUSTMENT, &value);
+  g_value_set_static_string (&value, "low-gain-up");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_GAIN_ADJUSTMENT, &value);
+  g_value_set_static_string (&value, "high-gain-down");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_GAIN_ADJUSTMENT, &value);
+  g_value_set_static_string (&value, "low-gain-down");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_GAIN_ADJUSTMENT, &value);
+
+  g_value_set_static_string (&value, "auto");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_WHITE_BALANCE, &value);
+  g_value_set_static_string (&value, "manual");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_WHITE_BALANCE, &value);
+
+  g_value_set_static_string (&value, "normal");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_CONTRAST,
+      &value);
+  g_value_set_static_string (&value, "hard");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_CONTRAST,
+      &value);
+  g_value_set_static_string (&value, "soft");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_CONTRAST,
+      &value);
+
+  g_value_set_static_string (&value, "normal");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SATURATION, &value);
+  g_value_set_static_string (&value, "low-saturation");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SATURATION, &value);
+  g_value_set_static_string (&value, "high-saturation");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SATURATION, &value);
+
+  g_value_set_static_string (&value, "normal");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SHARPNESS,
+      &value);
+  g_value_set_static_string (&value, "hard");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SHARPNESS,
+      &value);
+  g_value_set_static_string (&value, "soft");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SHARPNESS,
+      &value);
+
+  g_value_set_static_string (&value, "unknown");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "average");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "center-weighted-average");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "spot");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "multi-spot");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "pattern");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "partial");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+  g_value_set_static_string (&value, "other");
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_METERING_MODE, &value);
+
+  g_value_set_static_string (&value, "dsc");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SOURCE,
+      &value);
+  g_value_set_static_string (&value, "other");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SOURCE,
+      &value);
+  g_value_set_static_string (&value, "transparent-scanner");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SOURCE,
+      &value);
+  g_value_set_static_string (&value, "reflex-scanner");
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_CAPTURING_SOURCE,
+      &value);
   g_value_unset (&value);
 
   g_value_init (&value, G_TYPE_DOUBLE);
   g_value_set_double (&value, 30.5);
-  do_exif_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LATITUDE,
-      &value);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LATITUDE, &value);
   g_value_set_double (&value, -12.125);
-  do_exif_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LATITUDE,
-      &value);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LATITUDE, &value);
   g_value_set_double (&value, 0);
-  do_exif_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LONGITUDE,
-      &value);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LONGITUDE, &value);
   g_value_set_double (&value, 65.0);
-  do_exif_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LONGITUDE,
-      &value);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LONGITUDE, &value);
   g_value_set_double (&value, -0.75);
-  do_exif_tag_serialization_deserialization (GST_TAG_GEO_LOCATION_LONGITUDE,
-      &value);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_LONGITUDE, &value);
 
   g_value_set_double (&value, 0.0);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION, &value);
   g_value_set_double (&value, 180.5);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION, &value);
   g_value_set_double (&value, 0.12345);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION, &value);
   g_value_set_double (&value, 359.9);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION, &value);
 
   g_value_set_double (&value, 0.0);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_ELEVATION, &value);
   g_value_set_double (&value, 321.456);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_ELEVATION, &value);
   g_value_set_double (&value, -12.56);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_ELEVATION, &value);
 
   g_value_set_double (&value, 0);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, &value);
   g_value_set_double (&value, 100 / 3.6);
-  do_exif_tag_serialization_deserialization
+  do_simple_exif_tag_serialization_deserialization
       (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, &value);
+
+  g_value_set_double (&value, 0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_HORIZONTAL_ERROR, &value);
+  g_value_set_double (&value, 50.25);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_GEO_LOCATION_HORIZONTAL_ERROR, &value);
+
+  g_value_set_double (&value, 0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_DIGITAL_ZOOM_RATIO, &value);
+  g_value_set_double (&value, 2.5);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_DIGITAL_ZOOM_RATIO, &value);
+  g_value_set_double (&value, 8.75);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_DIGITAL_ZOOM_RATIO, &value);
+
+  g_value_set_double (&value, 20.0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_FOCAL_LENGTH, &value);
+  g_value_set_double (&value, 5.5);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_FOCAL_LENGTH, &value);
+
+  g_value_set_double (&value, 16);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_FOCAL_RATIO, &value);
+  g_value_set_double (&value, 2.7);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_FOCAL_LENGTH, &value);
+
+  g_value_set_double (&value, 96.0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_IMAGE_HORIZONTAL_PPI, &value);
+  g_value_set_double (&value, 300.0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_IMAGE_HORIZONTAL_PPI, &value);
+  g_value_set_double (&value, 87.5);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_IMAGE_VERTICAL_PPI, &value);
+  g_value_set_double (&value, 600.0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_IMAGE_VERTICAL_PPI, &value);
+
+  g_value_set_double (&value, 0.0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, &value);
+  g_value_set_double (&value, 1.0);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, &value);
+  g_value_set_double (&value, -2.5);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, &value);
   g_value_unset (&value);
+
+  g_value_init (&value, G_TYPE_INT);
+  g_value_set_int (&value, 400);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_ISO_SPEED, &value);
+  g_value_set_int (&value, 1600);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_ISO_SPEED, &value);
+  g_value_unset (&value);
+
+  g_value_init (&value, GST_TYPE_DATE_TIME);
+  datetime = gst_date_time_new_local_time (2010, 6, 22, 12, 5, 10);
+  g_value_set_boxed (&value, datetime);
+  gst_date_time_unref (datetime);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_DATE_TIME, &value);
+  g_value_unset (&value);
+
+  g_value_init (&value, GST_TYPE_BUFFER);
+  buf = gst_buffer_new_and_alloc (1024);
+  for (i = 0; i < 1024; i++)
+    GST_BUFFER_DATA (buf)[i] = i % 255;
+  gst_value_set_buffer (&value, buf);
+  gst_buffer_unref (buf);
+  do_simple_exif_tag_serialization_deserialization (GST_TAG_APPLICATION_DATA,
+      &value);
+  g_value_unset (&value);
+
+  g_value_init (&value, GST_TYPE_FRACTION);
+  gst_value_set_fraction (&value, 1, 1);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SHUTTER_SPEED, &value);
+  gst_value_set_fraction (&value, 1, 30);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SHUTTER_SPEED, &value);
+  gst_value_set_fraction (&value, 1, 200);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SHUTTER_SPEED, &value);
+  gst_value_set_fraction (&value, 1, 8000);
+  do_simple_exif_tag_serialization_deserialization
+      (GST_TAG_CAPTURING_SHUTTER_SPEED, &value);
+  g_value_unset (&value);
+
+  /* flash is a little bit more tricky, because 2 tags are merged into 1 in
+   * exif */
+  taglist = gst_tag_list_new_full (GST_TAG_CAPTURING_FLASH_FIRED, FALSE,
+      GST_TAG_CAPTURING_FLASH_MODE, "auto", NULL);
+  do_exif_tag_serialization_deserialization (taglist);
+  gst_tag_list_free (taglist);
+
+  taglist = gst_tag_list_new_full (GST_TAG_CAPTURING_FLASH_FIRED, TRUE,
+      GST_TAG_CAPTURING_FLASH_MODE, "auto", NULL);
+  do_exif_tag_serialization_deserialization (taglist);
+  gst_tag_list_free (taglist);
+
+  taglist = gst_tag_list_new_full (GST_TAG_CAPTURING_FLASH_FIRED, FALSE,
+      GST_TAG_CAPTURING_FLASH_MODE, "never", NULL);
+  do_exif_tag_serialization_deserialization (taglist);
+  gst_tag_list_free (taglist);
+
+  taglist = gst_tag_list_new_full (GST_TAG_CAPTURING_FLASH_FIRED, TRUE,
+      GST_TAG_CAPTURING_FLASH_MODE, "always", NULL);
+  do_exif_tag_serialization_deserialization (taglist);
+  gst_tag_list_free (taglist);
 }
 
 GST_END_TEST;
@@ -1221,17 +1835,20 @@ tag_suite (void)
   TCase *tc_chain = tcase_create ("general");
 
   suite_add_tcase (s, tc_chain);
-  tcase_add_test (tc_chain, test_muscibrainz_tag_registration);
+  tcase_add_test (tc_chain, test_musicbrainz_tag_registration);
   tcase_add_test (tc_chain, test_parse_extended_comment);
   tcase_add_test (tc_chain, test_vorbis_tags);
   tcase_add_test (tc_chain, test_id3_tags);
   tcase_add_test (tc_chain, test_id3v1_utf8_tag);
   tcase_add_test (tc_chain, test_language_utils);
+  tcase_add_test (tc_chain, test_license_utils);
   tcase_add_test (tc_chain, test_xmp_formatting);
   tcase_add_test (tc_chain, test_xmp_parsing);
   tcase_add_test (tc_chain, test_xmp_tags_serialization_deserialization);
+  tcase_add_test (tc_chain, test_xmp_compound_tags);
   tcase_add_test (tc_chain, test_exif_parsing);
   tcase_add_test (tc_chain, test_exif_tags_serialization_deserialization);
+  tcase_add_test (tc_chain, test_exif_multiple_tags);
   return s;
 }
 

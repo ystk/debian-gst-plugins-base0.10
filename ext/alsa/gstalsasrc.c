@@ -48,17 +48,21 @@
 
 #include "gstalsasrc.h"
 #include "gstalsadeviceprobe.h"
+#include "gst/glib-compat-private.h"
 
 #include <gst/gst-i18n-plugin.h>
 
 #define DEFAULT_PROP_DEVICE		"default"
 #define DEFAULT_PROP_DEVICE_NAME	""
+#define DEFAULT_PROP_CARD_NAME	        ""
 
 enum
 {
   PROP_0,
   PROP_DEVICE,
   PROP_DEVICE_NAME,
+  PROP_CARD_NAME,
+  PROP_LAST
 };
 
 static void gst_alsasrc_init_interfaces (GType type);
@@ -188,8 +192,8 @@ gst_alsasrc_base_init (gpointer g_class)
       "Audio source (ALSA)", "Source/Audio",
       "Read from a sound card via ALSA", "Wim Taymans <wim@fluendo.com>");
 
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&alsasrc_src_factory));
+  gst_element_class_add_static_pad_template (element_class,
+      &alsasrc_src_factory);
 }
 
 static void
@@ -226,6 +230,11 @@ gst_alsasrc_class_init (GstAlsaSrcClass * klass)
       g_param_spec_string ("device-name", "Device name",
           "Human-readable name of the sound device",
           DEFAULT_PROP_DEVICE_NAME, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_CARD_NAME,
+      g_param_spec_string ("card-name", "Card name",
+          "Human-readable name of the sound card",
+          DEFAULT_PROP_CARD_NAME, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 }
 
 static void
@@ -266,6 +275,11 @@ gst_alsasrc_get_property (GObject * object, guint prop_id,
       g_value_take_string (value,
           gst_alsa_find_device_name (GST_OBJECT_CAST (src),
               src->device, src->handle, SND_PCM_STREAM_CAPTURE));
+      break;
+    case PROP_CARD_NAME:
+      g_value_take_string (value,
+          gst_alsa_find_card_name (GST_OBJECT_CAST (src),
+              src->device, SND_PCM_STREAM_CAPTURE));
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -331,7 +345,7 @@ static int
 set_hwparams (GstAlsaSrc * alsa)
 {
   guint rrate;
-  gint err, dir;
+  gint err;
   snd_pcm_hw_params_t *params;
 
   snd_pcm_hw_params_malloc (&params);
@@ -357,12 +371,12 @@ set_hwparams (GstAlsaSrc * alsa)
   if (alsa->buffer_time != -1) {
     /* set the buffer time */
     CHECK (snd_pcm_hw_params_set_buffer_time_near (alsa->handle, params,
-            &alsa->buffer_time, &dir), buffer_time);
+            &alsa->buffer_time, NULL), buffer_time);
   }
   if (alsa->period_time != -1) {
     /* set the period time */
     CHECK (snd_pcm_hw_params_set_period_time_near (alsa->handle, params,
-            &alsa->period_time, &dir), period_time);
+            &alsa->period_time, NULL), period_time);
   }
 
   /* write the parameters to device */
@@ -371,7 +385,7 @@ set_hwparams (GstAlsaSrc * alsa)
   CHECK (snd_pcm_hw_params_get_buffer_size (params, &alsa->buffer_size),
       buffer_size);
 
-  CHECK (snd_pcm_hw_params_get_period_size (params, &alsa->period_size, &dir),
+  CHECK (snd_pcm_hw_params_get_period_size (params, &alsa->period_size, NULL),
       period_size);
 
   snd_pcm_hw_params_free (params);

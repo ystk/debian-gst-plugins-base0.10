@@ -14,7 +14,8 @@ Homepage: http://gstreamer.freedesktop.org
 Package: @GST_PKGNAME@-plugins-base-apps
 Architecture: any
 Section: utils
-Depends: ${misc:Depends},
+Depends: ${shlibs:Depends},
+         ${misc:Depends},
          ${perl:Depends},
          @GST_PKGNAME@-tools
 Description: GStreamer helper programs from the "base" set
@@ -47,7 +48,9 @@ Description: GStreamer documentation for plugins from the "base" set
 
 Package: @GST_PLUGINS_BASE_LIB@
 Architecture: any
+Multi-Arch: same
 Section: libs
+Pre-Depends: ${misc:Pre-Depends}
 Depends: ${misc:Depends},
          ${shlibs:Depends},
          iso-codes
@@ -77,7 +80,8 @@ Depends: ${misc:Depends},
          pkg-config,
          @GST_LIB_DEV_DEP@,
          libglib2.0-dev,
-         libxml2-dev
+         libxml2-dev,
+         gir1.2-gst-plugins-base-@GST_ABI@ (= ${binary:Version})
 Replaces: gobject-introspection-repository (<< 0.6.5-2)
 Description: GStreamer development files for libraries from the "base" set
  GStreamer is a streaming media framework, based on graphs of filters
@@ -91,7 +95,8 @@ Description: GStreamer development files for libraries from the "base" set
  the "base" set, an essential exemplary set of elements.
 
 Package: @GST_PKGNAME@-alsa
-Architecture: @linux@
+Architecture: linux-any
+Multi-Arch: same
 Section: libs
 Depends: ${misc:Depends},
          ${shlibs:Depends},
@@ -118,6 +123,7 @@ Description: GStreamer plugin for ALSA
 
 Package: @GST_PKGNAME@-gnomevfs
 Architecture: any
+Multi-Arch: same
 Section: libs
 Depends: ${misc:Depends},
          ${shlibs:Depends}
@@ -142,11 +148,12 @@ Description: GStreamer plugin for GnomeVFS
 
 Package: @GST_PKGNAME@-plugins-base
 Architecture: any
+Multi-Arch: same
 Section: libs
 Depends: ${misc:Depends},
          ${shlibs:Depends},
          @GST_PLUGINS_BASE_LIB@ (>= @GST_VERSION@)
-Recommends: gvfs
+Suggests: gvfs
 Replaces: gstreamer0.10-plugins-bad (<< 0.10.3+cvs20060814-0ubuntu4)
 XB-GStreamer-Version: ${gstreamer:Version}
 XB-GStreamer-Elements: ${gstreamer:Elements}
@@ -168,9 +175,10 @@ Description: GStreamer plugins from the "base" set
 
 Package: @GST_PKGNAME@-plugins-base-dbg
 Architecture: any
+Multi-Arch: same
 Section: debug
 Priority: extra
-Depends: @GST_PKGNAME@-alsa (= ${binary:Version}) [@linux@],
+Depends: @GST_PKGNAME@-alsa (= ${binary:Version}) [linux-any],
          @GST_PKGNAME@-plugins-base (= ${binary:Version}),
          @GST_PKGNAME@-x (= ${binary:Version}),
          @GST_PLUGINS_BASE_LIB@ (= ${binary:Version}),
@@ -192,6 +200,7 @@ Description: GStreamer plugins from the "base" set
 
 Package: @GST_PKGNAME@-x
 Architecture: any
+Multi-Arch: same
 Section: libs
 Depends: ${misc:Depends},
          ${shlibs:Depends},
@@ -215,26 +224,16 @@ Description: GStreamer plugins for X11 and Pango
  for standard Xlib support and for the Xv extension, as well as the
  plugin for Pango-based text rendering and overlay.
 
-Package: gir1.0-gst-plugins-base-@GST_ABI@
-Section: libs
+Package: gir1.2-gst-plugins-base-@GST_ABI@
+Section: introspection
 Architecture: any
 Depends: ${gir:Depends},
          ${shlibs:Depends},
          ${misc:Depends}
 Replaces: @GST_PLUGINS_BASE_LIB@ (<< 0.10.25-3),
-          gobject-introspection-repository (<< 0.6.5-2)
-Provides: gir1.0-gstapp-@GST_ABI@,
-          gir1.0-gstaudio-@GST_ABI@,
-          gir1.0-gstfft-@GST_ABI@,
-          gir1.0-gstinterfaces-@GST_ABI@,
-          gir1.0-gstnetbuffer-@GST_ABI@,
-          gir1.0-gstpbutils-@GST_ABI@,
-          gir1.0-gstriff-@GST_ABI@,
-          gir1.0-gstrtp-@GST_ABI@,
-          gir1.0-gstrtsp-@GST_ABI@,
-          gir1.0-gstsdp-@GST_ABI@,
-          gir1.0-gsttag-@GST_ABI@,
-          gir1.0-gstvideo-@GST_ABI@
+          gobject-introspection-repository (<< 0.6.5-2),
+          gir1.0-gst-plugins-base-@GST_ABI@
+Conflicts: gir1.0-gst-plugins-base-@GST_ABI@
 Description: Description: GObject introspection data for the GStreamer Plugins Base library
  This package contains introspection data for the GStreamer Plugins Base library.
  .

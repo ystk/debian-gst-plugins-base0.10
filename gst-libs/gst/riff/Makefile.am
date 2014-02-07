@@ -27,25 +27,28 @@ gir_sources=$(patsubst %,$(srcdir)/%, $(libgstriff_@GST_MAJORMINOR@_la_SOURCES))
 gir_cincludes=$(patsubst %,--c-include='gst/riff/%',$(libgstriff_@GST_MAJORMINOR@include_HEADERS))
 
 GstRiff-@GST_MAJORMINOR@.gir: $(INTROSPECTION_SCANNER) libgstriff-@GST_MAJORMINOR@.la
-	$(AM_V_GEN)PKG_CONFIG_PATH="$(PKG_CONFIG_PATH):$(top_builddir)/pkgconfig" \
+	$(AM_V_GEN)PKG_CONFIG_PATH="$(GST_PKG_CONFIG_PATH)" \
+		GST_PLUGIN_SYSTEM_PATH="" GST_PLUGIN_PATH="" GST_REGISTRY_UPDATE=no \
 		$(INTROSPECTION_SCANNER) -v --namespace GstRiff \
 		--nsversion=@GST_MAJORMINOR@ \
 		--strip-prefix=Gst \
 		$(gir_cincludes) \
-		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-0.10` \
-		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-base-0.10` \
 		--add-include-path=$(builddir)/../tag \
 		--add-include-path=$(builddir)/../audio \
 		--add-include-path=$(builddir)/../interfaces \
-		--library=libgstriff-0.10.la \
-		--include=GstAudio-0.10 \
-		--include=GstTag-0.10 \
-		--include=Gst-0.10 \
+		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-@GST_MAJORMINOR@` \
+		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-base-@GST_MAJORMINOR@` \
+		--library=libgstriff-@GST_MAJORMINOR@.la \
+		--include=GstAudio-@GST_MAJORMINOR@ \
+		--include=GstTag-@GST_MAJORMINOR@ \
+		--include=Gst-@GST_MAJORMINOR@ \
 		--libtool="$(top_builddir)/libtool" \
-		--pkg gstreamer-0.10 \
-		--pkg gstreamer-tag-0.10 \
-		--pkg gstreamer-audio-0.10 \
-		--pkg gstreamer-interfaces-0.10 \
+		--pkg gstreamer-@GST_MAJORMINOR@ \
+		--pkg gstreamer-tag-@GST_MAJORMINOR@ \
+		--pkg gstreamer-audio-@GST_MAJORMINOR@ \
+		--pkg gstreamer-interfaces-@GST_MAJORMINOR@ \
+		--pkg-export gstreamer-riff-@GST_MAJORMINOR@ \
+		--add-init-section="gst_init(NULL,NULL);" \
 		--output $@ \
 		$(gir_headers) \
 		$(gir_sources)
@@ -60,15 +63,30 @@ typelibsdir = $(libdir)/girepository-1.0/
 typelibs_DATA = $(BUILT_GIRSOURCES:.gir=.typelib)
 
 %.typelib: %.gir $(INTROSPECTION_COMPILER)
-	$(AM_V_GEN)$(INTROSPECTION_COMPILER) \
+	$(AM_V_GEN)PKG_CONFIG_PATH="$(GST_PKG_CONFIG_PATH)" \
+		$(INTROSPECTION_COMPILER) \
 		--includedir=$(srcdir) \
 		--includedir=$(builddir) \
 		--includedir=$(builddir)/../tag \
 		--includedir=$(builddir)/../audio \
 		--includedir=$(builddir)/../interfaces \
-		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-0.10` \
-		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-base-0.10` \
+		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-@GST_MAJORMINOR@` \
+		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-base-@GST_MAJORMINOR@` \
 		$(INTROSPECTION_COMPILER_OPTS) $< -o $(@F)
 
 CLEANFILES = $(BUILT_GIRSOURCES) $(typelibs_DATA)
 endif
+
+Android.mk: Makefile.am
+	androgenizer -:PROJECT libgstriff -:SHARED libgstriff-@GST_MAJORMINOR@ \
+	 -:TAGS eng debug \
+         -:REL_TOP $(top_srcdir) -:ABS_TOP $(abs_top_srcdir) \
+	 -:SOURCES $(libgstriff_@GST_MAJORMINOR@_la_SOURCES) \
+	 -:CFLAGS $(DEFS) $(DEFAULT_INCLUDES) $(libgstriff_@GST_MAJORMINOR@_la_CFLAGS) \
+	 -:LDFLAGS $(libgstriff_@GST_MAJORMINOR@_la_LDFLAGS) \
+	           $(libgstriff_@GST_MAJORMINOR@_la_LIBADD) \
+	           -ldl \
+	 -:HEADER_TARGET gstreamer-@GST_MAJORMINOR@/gst/tag \
+	 -:HEADERS $(libgstriff_@GST_MAJORMINOR@include_HEADERS) \
+	 -:PASSTHROUGH LOCAL_ARM_MODE:=arm \
+	> $@

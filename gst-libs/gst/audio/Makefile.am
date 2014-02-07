@@ -16,17 +16,21 @@ lib_LTLIBRARIES = \
 
 CLEANFILES = $(BUILT_SOURCES)
 
+# FIXME 0.11: rename GstBaseAudioSink to GstAudioBaseSink or merge with GstAudioSink
 libgstaudio_@GST_MAJORMINOR@_la_SOURCES = \
 	audio.c \
 	gstringbuffer.c \
 	gstaudioclock.c \
 	mixerutils.c \
 	multichannel.c \
+	gstaudiodecoder.c \
+	gstaudioencoder.c \
 	gstbaseaudiosink.c \
 	gstbaseaudiosrc.c \
 	gstaudiofilter.c \
 	gstaudiosink.c \
-	gstaudiosrc.c
+	gstaudiosrc.c \
+	gstaudioiec61937.c
 nodist_libgstaudio_@GST_MAJORMINOR@_la_SOURCES = $(built_sources) $(built_headers)
 
 libgstaudio_@GST_MAJORMINOR@includedir = $(includedir)/gstreamer-@GST_MAJORMINOR@/gst/audio
@@ -35,25 +39,25 @@ libgstaudio_@GST_MAJORMINOR@include_HEADERS = \
 	gstringbuffer.h \
 	gstaudioclock.h \
 	gstaudiofilter.h \
+	gstaudiodecoder.h \
+	gstaudioencoder.h \
 	gstbaseaudiosink.h \
 	gstbaseaudiosrc.h \
 	gstaudiosink.h \
 	gstaudiosrc.h \
 	mixerutils.h \
-	multichannel.h
+	multichannel.h \
+	gstaudioiec61937.h
 
 nodist_libgstaudio_@GST_MAJORMINOR@include_HEADERS = \
 	audio-enumtypes.h
 
 libgstaudio_@GST_MAJORMINOR@_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CFLAGS)
-libgstaudio_@GST_MAJORMINOR@_la_LIBADD = $(GST_BASE_LIBS) $(GST_LIBS) \
-  $(top_builddir)/gst-libs/gst/interfaces/libgstinterfaces-@GST_MAJORMINOR@.la
+libgstaudio_@GST_MAJORMINOR@_la_LIBADD = \
+  $(top_builddir)/gst-libs/gst/pbutils/libgstpbutils-@GST_MAJORMINOR@.la \
+  $(top_builddir)/gst-libs/gst/interfaces/libgstinterfaces-@GST_MAJORMINOR@.la \
+  $(GST_BASE_LIBS) $(GST_LIBS)
 libgstaudio_@GST_MAJORMINOR@_la_LDFLAGS = $(GST_LIB_LDFLAGS) $(GST_ALL_LDFLAGS) $(GST_LT_LDFLAGS)
-
-noinst_PROGRAMS = testchannels
-testchannels_SOURCES = testchannels.c
-testchannels_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS)
-testchannels_LDADD = $(GST_LIBS)
 
 include $(top_srcdir)/common/gst-glib-gen.mak
 
@@ -68,7 +72,8 @@ gir_cincludes=$(patsubst %,--c-include='gst/audio/%',$(libgstaudio_@GST_MAJORMIN
 gir_cincludes+=$(patsubst %,--c-include='gst/audio/%',$(nodist_libgstaudio_@GST_MAJORMINOR@include_HEADERS))
 
 GstAudio-@GST_MAJORMINOR@.gir: $(INTROSPECTION_SCANNER) libgstaudio-@GST_MAJORMINOR@.la
-	$(AM_V_GEN)PKG_CONFIG_PATH="$(PKG_CONFIG_PATH):$(top_builddir)/pkgconfig" \
+	$(AM_V_GEN)PKG_CONFIG_PATH="$(GST_PKG_CONFIG_PATH)" \
+		GST_PLUGIN_SYSTEM_PATH="" GST_PLUGIN_PATH="" GST_REGISTRY_UPDATE=no \
 		$(INTROSPECTION_SCANNER) -v --namespace GstAudio \
 		--nsversion=@GST_MAJORMINOR@ \
 		--strip-prefix=Gst \
@@ -76,16 +81,18 @@ GstAudio-@GST_MAJORMINOR@.gir: $(INTROSPECTION_SCANNER) libgstaudio-@GST_MAJORMI
 		-I$(top_builddir)/gst-libs \
 		$(gir_cincludes) \
 		--add-include-path=$(builddir)/../interfaces \
-		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-0.10` \
-		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-base-0.10` \
-		--library=libgstaudio-0.10.la \
-		--include=Gst-0.10 \
-		--include=GstBase-0.10 \
-		--include=GstInterfaces-0.10 \
+		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-@GST_MAJORMINOR@` \
+		--add-include-path=`$(PKG_CONFIG) --variable=girdir gstreamer-base-@GST_MAJORMINOR@` \
+		--library=libgstaudio-@GST_MAJORMINOR@.la \
+		--include=Gst-@GST_MAJORMINOR@ \
+		--include=GstBase-@GST_MAJORMINOR@ \
+		--include=GstInterfaces-@GST_MAJORMINOR@ \
 		--libtool="$(top_builddir)/libtool" \
-		--pkg gstreamer-0.10 \
-		--pkg gstreamer-base-0.10 \
-		--pkg gstreamer-interfaces-0.10 \
+		--pkg gstreamer-@GST_MAJORMINOR@ \
+		--pkg gstreamer-base-@GST_MAJORMINOR@ \
+		--pkg gstreamer-interfaces-@GST_MAJORMINOR@ \
+		--pkg-export gstreamer-audio-@GST_MAJORMINOR@ \
+		--add-init-section="gst_init(NULL,NULL);" \
 		--output $@ \
 		$(gir_headers) \
 		$(gir_sources)
@@ -100,13 +107,30 @@ typelibsdir = $(libdir)/girepository-1.0/
 typelibs_DATA = $(BUILT_GIRSOURCES:.gir=.typelib)
 
 %.typelib: %.gir $(INTROSPECTION_COMPILER)
-	$(AM_V_GEN)$(INTROSPECTION_COMPILER) \
+	$(AM_V_GEN)PKG_CONFIG_PATH="$(GST_PKG_CONFIG_PATH)" \
+		$(INTROSPECTION_COMPILER) \
 		--includedir=$(srcdir) \
 		--includedir=$(builddir) \
 		--includedir=$(builddir)/../interfaces \
-		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-base-0.10` \
-		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-0.10` \
+		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-base-@GST_MAJORMINOR@` \
+		--includedir=`$(PKG_CONFIG) --variable=girdir gstreamer-@GST_MAJORMINOR@` \
 		$(INTROSPECTION_COMPILER_OPTS) $< -o $(@F)
 
 CLEANFILES += $(BUILT_GIRSOURCES) $(typelibs_DATA)
 endif
+
+Android.mk: Makefile.am $(BUILT_SOURCES)
+	androgenizer -:PROJECT libgstaudio -:SHARED libgstaudio-@GST_MAJORMINOR@ \
+	 -:TAGS eng debug \
+         -:REL_TOP $(top_srcdir) -:ABS_TOP $(abs_top_srcdir) \
+	 -:SOURCES $(libgstaudio_@GST_MAJORMINOR@_la_SOURCES) \
+	           $(nodist_libgstaudio_@GST_MAJORMINOR@_la_SOURCES) \
+	 -:CFLAGS $(DEFS) $(DEFAULT_INCLUDES) $(libgstaudio_@GST_MAJORMINOR@_la_CFLAGS) \
+	 -:LDFLAGS $(libgstaudio_@GST_MAJORMINOR@_la_LDFLAGS) \
+	           $(libgstaudio_@GST_MAJORMINOR@_la_LIBADD) \
+	           -ldl \
+	 -:HEADER_TARGET gstreamer-@GST_MAJORMINOR@/gst/tag \
+	 -:HEADERS $(libgstaudio_@GST_MAJORMINOR@include_HEADERS) \
+	           $(nodist_libgstaudio_@GST_MAJORMINOR@include_HEADERS) \
+	 -:PASSTHROUGH LOCAL_ARM_MODE:=arm \
+	> $@

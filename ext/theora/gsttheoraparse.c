@@ -105,10 +105,10 @@ gst_theora_parse_base_init (gpointer g_class)
 {
   GstElementClass *element_class = GST_ELEMENT_CLASS (g_class);
 
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&theora_parse_src_factory));
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&theora_parse_sink_factory));
+  gst_element_class_add_static_pad_template (element_class,
+      &theora_parse_src_factory);
+  gst_element_class_add_static_pad_template (element_class,
+      &theora_parse_sink_factory);
   gst_element_class_set_details_simple (element_class,
       "Theora video parser", "Codec/Parser/Video",
       "parse raw theora streams", "Andy Wingo <wingo@pobox.com>");
@@ -137,8 +137,8 @@ gst_theora_parse_class_init (GstTheoraParseClass * klass)
           "An array of (granuletime, buffertime) pairs",
           g_param_spec_uint64 ("time", "Time",
               "Time (either granuletime or buffertime)", 0, G_MAXUINT64, 0,
-              G_PARAM_READWRITE),
-          (GParamFlags) G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+              G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS),
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   gstelement_class->change_state = theora_parse_change_state;
 
@@ -241,7 +241,7 @@ theora_parse_get_property (GObject * object, guint prop_id,
         g_value_unset (&v);
       }
 
-      g_value_set_boxed (value, array);
+      g_value_take_boxed (value, array);
     }
       break;
     default:
@@ -307,8 +307,6 @@ theora_parse_set_streamheader (GstTheoraParse * parse)
     if (buf == NULL)
       continue;
 
-    gst_buffer_set_caps (buf, GST_PAD_CAPS (parse->srcpad));
-
     packet.packet = GST_BUFFER_DATA (buf);
     packet.bytes = GST_BUFFER_SIZE (buf);
     packet.granulepos = GST_BUFFER_OFFSET_END (buf);
@@ -330,7 +328,7 @@ theora_parse_set_streamheader (GstTheoraParse * parse)
   parse->shift = parse->info.keyframe_granule_shift;
 
   /* With libtheora-1.0beta1 the granulepos scheme was changed:
-   * where earlier the granulepos refered to the index/beginning
+   * where earlier the granulepos referred to the index/beginning
    * of a frame, it now refers to the end, which matches the use
    * in vorbis/speex. We check the bitstream version from the header so
    * we know which way to interpret the incoming granuepos
@@ -368,8 +366,12 @@ theora_parse_push_headers (GstTheoraParse * parse)
   for (i = 0; i < 3; i++) {
     GstBuffer *buf;
 
-    if ((buf = parse->streamheader[i]))
-      gst_pad_push (parse->srcpad, gst_buffer_ref (buf));
+    if ((buf = parse->streamheader[i])) {
+      buf = gst_buffer_make_metadata_writable (buf);
+      gst_buffer_set_caps (buf, GST_PAD_CAPS (parse->srcpad));
+      gst_pad_push (parse->srcpad, buf);
+      parse->streamheader[i] = NULL;
+    }
   }
 }
 
@@ -583,8 +585,7 @@ theora_parse_drain_queue (GstTheoraParse * parse, gint64 granulepos)
     GST_WARNING ("jumped %" G_GINT64_FORMAT
         " frames backwards! not sure what to do here",
         parse->prev_frame - prev_frame);
-    ret = GST_FLOW_ERROR;
-    goto done;
+    parse->prev_frame = prev_frame;
   } else if (prev_frame > parse->prev_frame) {
     GST_INFO ("discontinuity detected (%" G_GINT64_FORMAT
         " frames)", prev_frame - parse->prev_frame);

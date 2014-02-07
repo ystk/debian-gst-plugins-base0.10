@@ -22,8 +22,12 @@
 #ifndef __GST_VORBIS_DEC_H__
 #define __GST_VORBIS_DEC_H__
 
+#ifdef HAVE_CONFIG_H
+#  include "config.h"
+#endif
 
 #include <gst/gst.h>
+#include <gst/audio/gstaudiodecoder.h>
 #include "gstvorbisdeclib.h"
 
 G_BEGIN_DECLS
@@ -48,39 +52,25 @@ typedef struct _GstVorbisDecClass GstVorbisDecClass;
  * Opaque data structure.
  */
 struct _GstVorbisDec {
-  GstElement        element;
-
-  GstPad           *sinkpad;
-  GstPad           *srcpad;
+  GstAudioDecoder element;
 
   vorbis_dsp_state  vd;
   vorbis_info       vi;
   vorbis_comment    vc;
+#ifndef USE_TREMOLO
   vorbis_block      vb;
+#endif
 
   gboolean          initialized;
   guint             width;
 
-  /* list of buffers that need timestamps */
-  GList            *queued;
-  /* gather/decode queues for reverse playback */
-  GList            *gather;
-  GList            *decode;
-
-  GstSegment        segment;
-  gboolean          discont;
-  guint32           seqnum;
-
-  GstClockTime      last_timestamp;
-
-  GList            *pendingevents;
   GstTagList       *taglist;
-  
+
   CopySampleFunc    copy_samples;
 };
 
 struct _GstVorbisDecClass {
-  GstElementClass parent_class;
+  GstAudioDecoderClass parent_class;
 };
 
 GType gst_vorbis_dec_get_type(void);

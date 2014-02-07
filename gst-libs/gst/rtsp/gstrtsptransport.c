@@ -117,20 +117,22 @@ static const RTSPLTransMap ltrans[] = {
 GType
 gst_rtsp_lower_trans_get_type (void)
 {
-  static GType rtsp_lower_trans_type = 0;
+  static volatile gsize rtsp_lower_trans_type = 0;
   static const GFlagsValue rtsp_lower_trans[] = {
-    {GST_RTSP_LOWER_TRANS_UDP, "UDP Unicast Mode", "udp-unicast"},
-    {GST_RTSP_LOWER_TRANS_UDP_MCAST, "UDP Multicast Mode", "udp-multicast"},
-    {GST_RTSP_LOWER_TRANS_TCP, "TCP interleaved mode", "tcp"},
-    {GST_RTSP_LOWER_TRANS_HTTP, "HTTP tunneled mode", "http"},
+    {GST_RTSP_LOWER_TRANS_UDP, "GST_RTSP_LOWER_TRANS_UDP", "udp-unicast"},
+    {GST_RTSP_LOWER_TRANS_UDP_MCAST, "GST_RTSP_LOWER_TRANS_UDP_MCAST",
+        "udp-multicast"},
+    {GST_RTSP_LOWER_TRANS_TCP, "GST_RTSP_LOWER_TRANS_TCP", "tcp"},
+    {GST_RTSP_LOWER_TRANS_HTTP, "GST_RTSP_LOWER_TRANS_HTTP", "http"},
     {0, NULL, NULL},
   };
 
-  if (!rtsp_lower_trans_type) {
-    rtsp_lower_trans_type =
-        g_flags_register_static ("GstRTSPLowerTrans", rtsp_lower_trans);
+  if (g_once_init_enter (&rtsp_lower_trans_type)) {
+    GType tmp = g_flags_register_static ("GstRTSPLowerTrans", rtsp_lower_trans);
+    g_once_init_leave (&rtsp_lower_trans_type, tmp);
   }
-  return rtsp_lower_trans_type;
+
+  return (GType) rtsp_lower_trans_type;
 }
 
 #define RTSP_TRANSPORT_PARAMETER_IS_UNIQUE(param) \
@@ -229,8 +231,7 @@ gst_rtsp_transport_get_mime (GstRTSPTransMode trans, const gchar ** mime)
  * @manager: location to hold the result
  * @option: option index.
  *
- * Get the #GStreamer element that can handle the buffers transported over
- * @trans.
+ * Get the #GstElement that can handle the buffers transported over @trans.
  *
  * It is possible that there are several managers available, use @option to
  * selected one.
@@ -268,6 +269,20 @@ parse_mode (GstRTSPTransport * transport, const gchar * str)
 }
 
 static gboolean
+check_range (const gchar * str, gchar ** tmp, gint * range)
+{
+  glong range_val;
+
+  range_val = strtol (str, tmp, 10);
+  if (range_val >= G_MININT && range_val <= G_MAXINT) {
+    *range = range_val;
+    return TRUE;
+  } else {
+    return FALSE;
+  }
+}
+
+static gboolean
 parse_range (const gchar * str, GstRTSPRange * range)
 {
   gchar *minus;
@@ -284,16 +299,14 @@ parse_range (const gchar * str, GstRTSPRange * range)
     if (g_ascii_isspace (minus[1]) || minus[1] == '+' || minus[1] == '-')
       goto invalid_range;
 
-    range->min = strtol (str, &tmp, 10);
-    if (str == tmp || tmp != minus)
+    if (!check_range (str, &tmp, &range->min) || str == tmp || tmp != minus)
       goto invalid_range;
 
-    range->max = strtol (minus + 1, &tmp, 10);
-    if (*tmp && *tmp != ';')
+    if (!check_range (minus + 1, &tmp, &range->max) || (*tmp && *tmp != ';'))
       goto invalid_range;
   } else {
-    range->min = strtol (str, &tmp, 10);
-    if (str == tmp || (*tmp && *tmp != ';'))
+    if (!check_range (str, &tmp, &range->min) || str == tmp ||
+        (*tmp && *tmp != ';'))
       goto invalid_range;
 
     range->max = -1;

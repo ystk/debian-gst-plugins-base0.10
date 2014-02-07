@@ -1,2 +1,3 @@
 10_gnome-vfs-dav-url.patch
+98_fix-ogg-flac-transition.patch
 99_ltmain_as-needed.patch

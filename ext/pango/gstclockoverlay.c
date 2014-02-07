@@ -46,7 +46,7 @@
 #include "config.h"
 #endif
 
-#include <gstclockoverlay.h>
+#include "gstclockoverlay.h"
 #include <gst/video/video.h>
 #include <time.h>
 
@@ -117,17 +117,22 @@ static gchar *
 gst_clock_overlay_get_text (GstTextOverlay * overlay, GstBuffer * video_frame)
 {
   gchar *time_str, *txt, *ret;
-
-  overlay->need_render = TRUE;
+  GstClockOverlay *clock_overlay = GST_CLOCK_OVERLAY (overlay);
 
   txt = g_strdup (overlay->default_text);
 
-  time_str = gst_clock_overlay_render_time (GST_CLOCK_OVERLAY (overlay));
+  time_str = gst_clock_overlay_render_time (clock_overlay);
   if (txt != NULL && *txt != '\0') {
     ret = g_strdup_printf ("%s %s", txt, time_str);
   } else {
     ret = time_str;
     time_str = NULL;
+  }
+
+  if (g_strcmp0 (ret, clock_overlay->text)) {
+    overlay->need_render = TRUE;
+    g_free (clock_overlay->text);
+    clock_overlay->text = g_strdup (ret);
   }
 
   g_free (txt);
@@ -141,6 +146,8 @@ gst_clock_overlay_class_init (GstClockOverlayClass * klass)
 {
   GObjectClass *gobject_class;
   GstTextOverlayClass *gsttextoverlay_class;
+  PangoContext *context;
+  PangoFontDescription *font_description;
 
   gobject_class = (GObjectClass *) klass;
   gsttextoverlay_class = (GstTextOverlayClass *) klass;
@@ -155,30 +162,8 @@ gst_clock_overlay_class_init (GstClockOverlayClass * klass)
       g_param_spec_string ("time-format", "Date/Time Format",
           "Format to use for time and date value, as in strftime.",
           DEFAULT_PROP_TIMEFORMAT, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
-}
 
-
-static void
-gst_clock_overlay_finalize (GObject * object)
-{
-  GstClockOverlay *overlay = GST_CLOCK_OVERLAY (object);
-
-  g_free (overlay->format);
-  overlay->format = NULL;
-
-  G_OBJECT_CLASS (parent_class)->finalize (object);
-}
-
-
-static void
-gst_clock_overlay_init (GstClockOverlay * overlay, GstClockOverlayClass * klass)
-{
-  PangoFontDescription *font_description;
-  GstTextOverlay *textoverlay;
-  PangoContext *context;
-
-  textoverlay = GST_TEXT_OVERLAY (overlay);
-
+  g_mutex_lock (GST_TEXT_OVERLAY_CLASS (klass)->pango_lock);
   context = GST_TEXT_OVERLAY_CLASS (klass)->pango_context;
 
   pango_context_set_language (context, pango_language_from_string ("en_US"));
@@ -193,6 +178,29 @@ gst_clock_overlay_init (GstClockOverlay * overlay, GstClockOverlayClass * klass)
   pango_font_description_set_size (font_description, 18 * PANGO_SCALE);
   pango_context_set_font_description (context, font_description);
   pango_font_description_free (font_description);
+  g_mutex_unlock (GST_TEXT_OVERLAY_CLASS (klass)->pango_lock);
+}
+
+
+static void
+gst_clock_overlay_finalize (GObject * object)
+{
+  GstClockOverlay *overlay = GST_CLOCK_OVERLAY (object);
+
+  g_free (overlay->format);
+  g_free (overlay->text);
+  overlay->format = NULL;
+
+  G_OBJECT_CLASS (parent_class)->finalize (object);
+}
+
+
+static void
+gst_clock_overlay_init (GstClockOverlay * overlay, GstClockOverlayClass * klass)
+{
+  GstTextOverlay *textoverlay;
+
+  textoverlay = GST_TEXT_OVERLAY (overlay);
 
   textoverlay->valign = GST_TEXT_OVERLAY_VALIGN_TOP;
   textoverlay->halign = GST_TEXT_OVERLAY_HALIGN_LEFT;

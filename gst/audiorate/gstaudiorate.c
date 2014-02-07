@@ -78,6 +78,7 @@ enum
 
 #define DEFAULT_SILENT     TRUE
 #define DEFAULT_TOLERANCE  0
+#define DEFAULT_SKIP_TO_FIRST FALSE
 
 enum
 {
@@ -88,7 +89,7 @@ enum
   ARG_DROP,
   ARG_SILENT,
   ARG_TOLERANCE,
-  /* FILL ME */
+  ARG_SKIP_TO_FIRST
 };
 
 static GstStaticPadTemplate gst_audio_rate_src_template =
@@ -126,6 +127,9 @@ static GstElementClass *parent_class = NULL;
 
 /*static guint gst_audio_rate_signals[LAST_SIGNAL] = { 0 }; */
 
+static GParamSpec *pspec_drop = NULL;
+static GParamSpec *pspec_add = NULL;
+
 static GType
 gst_audio_rate_get_type (void)
 {
@@ -161,10 +165,10 @@ gst_audio_rate_base_init (gpointer g_class)
       "Drops/duplicates/adjusts timestamps on audio samples to make a perfect stream",
       "Wim Taymans <wim@fluendo.com>");
 
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&gst_audio_rate_sink_template));
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&gst_audio_rate_src_template));
+  gst_element_class_add_static_pad_template (element_class,
+      &gst_audio_rate_sink_template);
+  gst_element_class_add_static_pad_template (element_class,
+      &gst_audio_rate_src_template);
 }
 
 static void
@@ -185,12 +189,12 @@ gst_audio_rate_class_init (GstAudioRateClass * klass)
   g_object_class_install_property (object_class, ARG_OUT,
       g_param_spec_uint64 ("out", "Out", "Number of output samples", 0,
           G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
-  g_object_class_install_property (object_class, ARG_ADD,
-      g_param_spec_uint64 ("add", "Add", "Number of added samples", 0,
-          G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
-  g_object_class_install_property (object_class, ARG_DROP,
-      g_param_spec_uint64 ("drop", "Drop", "Number of dropped samples", 0,
-          G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+  pspec_add = g_param_spec_uint64 ("add", "Add", "Number of added samples",
+      0, G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+  g_object_class_install_property (object_class, ARG_ADD, pspec_add);
+  pspec_drop = g_param_spec_uint64 ("drop", "Drop", "Number of dropped samples",
+      0, G_MAXUINT64, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS);
+  g_object_class_install_property (object_class, ARG_DROP, pspec_drop);
   g_object_class_install_property (object_class, ARG_SILENT,
       g_param_spec_boolean ("silent", "silent",
           "Don't emit notify for dropped and duplicated frames", DEFAULT_SILENT,
@@ -208,6 +212,18 @@ gst_audio_rate_class_init (GstAudioRateClass * klass)
           "Only act if timestamp jitter/imperfection exceeds indicated tolerance (ns)",
           0, G_MAXUINT64, DEFAULT_TOLERANCE,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstAudioRate:skip-to-first:
+   *
+   * Don't produce buffers before the first one we receive.
+   *
+   * Since: 0.10.33
+   **/
+  g_object_class_install_property (object_class, ARG_SKIP_TO_FIRST,
+      g_param_spec_boolean ("skip-to-first", "Skip to first buffer",
+          "Don't produce buffers before the first one we receive",
+          DEFAULT_SKIP_TO_FIRST, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
   element_class->change_state = gst_audio_rate_change_state;
 }
@@ -376,7 +392,9 @@ gst_audio_rate_sink_event (GstPad * pad, GstEvent * event)
       break;
     }
     case GST_EVENT_EOS:
-      /* FIXME, fill last segment */
+      /* Fill segment until the end */
+      if (GST_CLOCK_TIME_IS_VALID (audiorate->src_segment.stop))
+        gst_audio_rate_fill_to_time (audiorate, audiorate->src_segment.stop);
       res = gst_pad_push_event (audiorate->srcpad, event);
       break;
     default:
@@ -491,6 +509,26 @@ gst_audio_rate_convert_segments (GstAudioRate * audiorate)
   return TRUE;
 }
 
+static void
+gst_audio_rate_notify_drop (GstAudioRate * audiorate)
+{
+#if !GLIB_CHECK_VERSION(2,26,0)
+  g_object_notify ((GObject *) audiorate, "drop");
+#else
+  g_object_notify_by_pspec ((GObject *) audiorate, pspec_drop);
+#endif
+}
+
+static void
+gst_audio_rate_notify_add (GstAudioRate * audiorate)
+{
+#if !GLIB_CHECK_VERSION(2,26,0)
+  g_object_notify ((GObject *) audiorate, "add");
+#else
+  g_object_notify_by_pspec ((GObject *) audiorate, pspec_add);
+#endif
+}
+
 static GstFlowReturn
 gst_audio_rate_chain (GstPad * pad, GstBuffer * buf)
 {
@@ -531,6 +569,16 @@ gst_audio_rate_chain (GstPad * pad, GstBuffer * buf)
     audiorate->next_offset = pos;
     audiorate->next_ts = gst_util_uint64_scale_int (audiorate->next_offset,
         GST_SECOND, audiorate->rate);
+
+    if (audiorate->skip_to_first && GST_BUFFER_TIMESTAMP_IS_VALID (buf)) {
+      GST_DEBUG_OBJECT (audiorate, "but skipping to first buffer instead");
+      pos = gst_util_uint64_scale_int (GST_BUFFER_TIMESTAMP (buf),
+          audiorate->rate, GST_SECOND);
+      GST_DEBUG_OBJECT (audiorate, "so resync to offset %" G_GINT64_FORMAT,
+          pos);
+      audiorate->next_offset = pos;
+      audiorate->next_ts = GST_BUFFER_TIMESTAMP (buf);
+    }
   }
 
   audiorate->in++;
@@ -601,7 +649,7 @@ gst_audio_rate_chain (GstPad * pad, GstBuffer * buf)
       GST_BUFFER_OFFSET_END (fill) = audiorate->next_offset;
 
       /* Use next timestamp, then calculate following timestamp based on 
-       * offset to get duration. Neccesary complexity to get 'perfect' 
+       * offset to get duration. Necessary complexity to get 'perfect' 
        * streams */
       GST_BUFFER_TIMESTAMP (fill) = audiorate->next_ts;
       audiorate->next_ts = gst_util_uint64_scale_int (audiorate->next_offset,
@@ -626,7 +674,7 @@ gst_audio_rate_chain (GstPad * pad, GstBuffer * buf)
       audiorate->add += cursamples;
 
       if (!audiorate->silent)
-        g_object_notify (G_OBJECT (audiorate), "add");
+        gst_audio_rate_notify_add (audiorate);
     }
 
   } else if (in_offset < audiorate->next_offset) {
@@ -644,7 +692,7 @@ gst_audio_rate_chain (GstPad * pad, GstBuffer * buf)
       buf = NULL;
 
       if (!audiorate->silent)
-        g_object_notify (G_OBJECT (audiorate), "drop");
+        gst_audio_rate_notify_drop (audiorate);
 
       goto beach;
     } else {
@@ -669,7 +717,7 @@ gst_audio_rate_chain (GstPad * pad, GstBuffer * buf)
           truncsamples);
 
       if (!audiorate->silent)
-        g_object_notify (G_OBJECT (audiorate), "drop");
+        gst_audio_rate_notify_drop (audiorate);
     }
   }
 
@@ -743,6 +791,9 @@ gst_audio_rate_set_property (GObject * object,
     case ARG_TOLERANCE:
       audiorate->tolerance = g_value_get_uint64 (value);
       break;
+    case ARG_SKIP_TO_FIRST:
+      audiorate->skip_to_first = g_value_get_boolean (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -773,6 +824,9 @@ gst_audio_rate_get_property (GObject * object,
       break;
     case ARG_TOLERANCE:
       g_value_set_uint64 (value, audiorate->tolerance);
+      break;
+    case ARG_SKIP_TO_FIRST:
+      g_value_set_boolean (value, audiorate->skip_to_first);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);

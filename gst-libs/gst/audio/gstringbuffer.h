@@ -47,7 +47,7 @@ typedef struct _GstRingBufferSpec GstRingBufferSpec;
  * @user_data: user data
  *
  * This function is set with gst_ring_buffer_set_callback() and is
- * called to fill the memory at @data with @len bytes of samples. 
+ * called to fill the memory at @data with @len bytes of samples.
  */
 typedef void (*GstRingBufferCallback) (GstRingBuffer *rbuf, guint8* data, guint len, gpointer user_data);
 
@@ -84,16 +84,18 @@ typedef enum {
 /**
  * GstBufferFormatType:
  * @GST_BUFTYPE_LINEAR: samples in linear PCM
- * @GST_BUFTYPE_FLOAT: samples in float 
+ * @GST_BUFTYPE_FLOAT: samples in float
  * @GST_BUFTYPE_MU_LAW: samples in mulaw
  * @GST_BUFTYPE_A_LAW: samples in alaw
  * @GST_BUFTYPE_IMA_ADPCM: samples in ima adpcm
- * @GST_BUFTYPE_MPEG: samples in mpeg audio format
+ * @GST_BUFTYPE_MPEG: samples in mpeg audio (but not AAC) format
  * @GST_BUFTYPE_GSM: samples in gsm format
  * @GST_BUFTYPE_IEC958: samples in IEC958 frames (e.g. AC3)
  * @GST_BUFTYPE_AC3: samples in AC3 format
  * @GST_BUFTYPE_EAC3: samples in EAC3 format
  * @GST_BUFTYPE_DTS: samples in DTS format
+ * @GST_BUFTYPE_MPEG2_AAC: samples in MPEG-2 AAC format
+ * @GST_BUFTYPE_MPEG4_AAC: samples in MPEG-4 AAC format
  *
  * The format of the samples in the ringbuffer.
  */
@@ -109,9 +111,58 @@ typedef enum
   GST_BUFTYPE_IEC958,
   GST_BUFTYPE_AC3,
   GST_BUFTYPE_EAC3,
-  GST_BUFTYPE_DTS
+  GST_BUFTYPE_DTS,
+  GST_BUFTYPE_MPEG2_AAC,
+  GST_BUFTYPE_MPEG4_AAC,
 } GstBufferFormatType;
 
+/**
+ * GstBufferFormat:
+ * @GST_UNKNOWN: unspecified
+ * @GST_S8: integer signed 8 bit
+ * @GST_U8: integer unsigned 8 bit
+ * @GST_S16_LE: integer signed 16 bit little endian
+ * @GST_S16_BE: integer signed 16 bit big endian
+ * @GST_U16_LE: integer unsigned 16 bit little endian
+ * @GST_U16_BE: integer unsigned 16 bit big endian
+ * @GST_S24_LE: integer signed 24 bit little endian
+ * @GST_S24_BE: integer signed 24 bit big endian
+ * @GST_U24_LE: integer unsigned 24 bit little endian
+ * @GST_U24_BE: integer unsigned 24 bit big endian
+ * @GST_S32_LE: integer signed 32 bit little endian
+ * @GST_S32_BE: integer signed 32 bit big endian
+ * @GST_U32_LE: integer unsigned 32 bit little endian
+ * @GST_U32_BE: integer unsigned 32 bit big endian
+ * @GST_S24_3LE: integer signed 24 bit little endian packed in 3 bytes
+ * @GST_S24_3BE: integer signed 24 bit big endian packed in 3 bytes
+ * @GST_U24_3LE: integer unsigned 24 bit little endian packed in 3 bytes
+ * @GST_U24_3BE: integer unsigned 24 bit big endian packed in 3 bytes
+ * @GST_S20_3LE: integer signed 20 bit little endian packed in 3 bytes
+ * @GST_S20_3BE: integer signed 20 bit big endian packed in 3 bytes
+ * @GST_U20_3LE: integer unsigned 20 bit little endian packed in 3 bytes
+ * @GST_U20_3BE: integer unsigned 20 bit big endian packed in 3 bytes
+ * @GST_S18_3LE: integer signed 18 bit little endian packed in 3 bytes
+ * @GST_S18_3BE: integer signed 18 bit big endian packed in 3 bytes
+ * @GST_U18_3LE: integer unsigned 18 bit little endian packed in 3 bytes
+ * @GST_U18_3BE: integer unsigned 18 bit big endian packed in 3 bytes
+ * @GST_FLOAT32_LE: floating 32 bit little endian
+ * @GST_FLOAT32_BE: floating 32 bit big endian
+ * @GST_FLOAT64_LE: floating 64 bit little endian
+ * @GST_FLOAT64_BE: floating 64 bit big endian
+ * @GST_MU_LAW: mu-law
+ * @GST_A_LAW: a-law
+ * @GST_IMA_ADPCM: ima adpcm
+ * @GST_MPEG: mpeg audio (but not aac)
+ * @GST_GSM: gsm
+ * @GST_IEC958: IEC958 frames
+ * @GST_AC3: ac3
+ * @GST_EAC3: eac3
+ * @GST_DTS: dts
+ * @GST_MPEG2_AAC: mpeg-2 aac
+ * @GST_MPEG4_AAC: mpeg-4 aac
+ *
+ * The detailed format of the samples in the ringbuffer.
+ */
 typedef enum
 {
   GST_UNKNOWN,
@@ -161,7 +212,9 @@ typedef enum
   GST_IEC958,
   GST_AC3,
   GST_EAC3,
-  GST_DTS
+  GST_DTS,
+  GST_MPEG2_AAC,
+  GST_MPEG4_AAC,
 } GstBufferFormat;
 
 /**
@@ -201,7 +254,7 @@ struct _GstRingBufferSpec
   gint      depth;
   gint      rate;
   gint      channels;
-  
+
   guint64  latency_time;        /* the required/actual latency time, this is the
 				 * actual the size of one segment and the
 				 * minimum possible latency we can achieve. */
@@ -325,7 +378,7 @@ struct _GstRingBufferClass {
   gboolean     (*activate)     (GstRingBuffer *buf, gboolean active);
 
   guint        (*commit)       (GstRingBuffer * buf, guint64 *sample,
-                                guchar * data, gint in_samples, 
+                                guchar * data, gint in_samples,
                                 gint out_samples, gint * accum);
 
   void         (*clear_all)    (GstRingBuffer * buf);
@@ -337,7 +390,7 @@ struct _GstRingBufferClass {
 GType gst_ring_buffer_get_type(void);
 
 /* callback stuff */
-void            gst_ring_buffer_set_callback    (GstRingBuffer *buf, GstRingBufferCallback cb, 
+void            gst_ring_buffer_set_callback    (GstRingBuffer *buf, GstRingBufferCallback cb,
                                                  gpointer user_data);
 
 gboolean        gst_ring_buffer_parse_caps      (GstRingBufferSpec *spec, GstCaps *caps);
@@ -382,14 +435,14 @@ void            gst_ring_buffer_set_sample      (GstRingBuffer *buf, guint64 sam
 void            gst_ring_buffer_clear_all       (GstRingBuffer *buf);
 
 /* commit samples */
-guint           gst_ring_buffer_commit          (GstRingBuffer *buf, guint64 sample, 
+guint           gst_ring_buffer_commit          (GstRingBuffer *buf, guint64 sample,
                                                  guchar *data, guint len);
 guint           gst_ring_buffer_commit_full     (GstRingBuffer * buf, guint64 *sample,
-		                                 guchar * data, gint in_samples, 
+		                                 guchar * data, gint in_samples,
 						 gint out_samples, gint * accum);
 
 /* read samples */
-guint           gst_ring_buffer_read            (GstRingBuffer *buf, guint64 sample, 
+guint           gst_ring_buffer_read            (GstRingBuffer *buf, guint64 sample,
                                                  guchar *data, guint len);
 
 /* mostly protected */

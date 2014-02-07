@@ -80,8 +80,10 @@ find_video_sink (void)
 
 int main(int argc, char *argv[])
 {
+#if !GLIB_CHECK_VERSION (2, 31, 0)
   if (!g_thread_supported ())
     g_thread_init (NULL);
+#endif
 
   gst_init (&argc, &argv);
   QApplication app(argc, argv);
@@ -107,7 +109,7 @@ int main(int argc, char *argv[])
   window.show();
   
   WId xwinid = window.winId();
-  gst_x_overlay_set_xwindow_id (GST_X_OVERLAY (sink), xwinid);
+  gst_x_overlay_set_window_handle (GST_X_OVERLAY (sink), xwinid);
 
   /* run the pipeline */
 

@@ -16,15 +16,11 @@
  * SECTION:gstbasertppayload
  * @short_description: Base class for RTP payloader
  *
- * <refsect2>
- * <para>
  * Provides a base class for RTP payloaders
- * </para>
- * </refsect2>
  */
 
 #ifdef HAVE_CONFIG_H
-#  include "config.h"
+#include "config.h"
 #endif
 
 #include <string.h>
@@ -46,6 +42,10 @@ struct _GstBaseRTPPayloadPrivate
   gboolean ssrc_random;
   guint16 next_seqnum;
   gboolean perfect_rtptime;
+  gint notified_first_timestamp;
+
+  guint64 base_offset;
+  gint64 base_rtime;
 
   gint64 prop_max_ptime;
   gint64 caps_max_ptime;
@@ -294,6 +294,8 @@ gst_basertppayload_init (GstBaseRTPPayload * basertppayload, gpointer g_class)
   basertppayload->min_ptime = DEFAULT_MIN_PTIME;
   basertppayload->priv->perfect_rtptime = DEFAULT_PERFECT_RTPTIME;
   basertppayload->abidata.ABI.ptime_multiple = DEFAULT_PTIME_MULTIPLE;
+  basertppayload->priv->base_offset = GST_BUFFER_OFFSET_NONE;
+  basertppayload->priv->base_rtime = GST_BUFFER_OFFSET_NONE;
 
   basertppayload->media = NULL;
   basertppayload->encoding_name = NULL;
@@ -382,6 +384,10 @@ gst_basertppayload_event (GstPad * pad, GstEvent * event)
   gboolean res;
 
   basertppayload = GST_BASE_RTP_PAYLOAD (gst_pad_get_parent (pad));
+  if (G_UNLIKELY (basertppayload == NULL)) {
+    gst_event_unref (event);
+    return FALSE;
+  }
   basertppayload_class = GST_BASE_RTP_PAYLOAD_GET_CLASS (basertppayload);
 
   if (basertppayload_class->handle_event) {
@@ -401,15 +407,27 @@ gst_basertppayload_event (GstPad * pad, GstEvent * event)
     case GST_EVENT_NEWSEGMENT:
     {
       gboolean update;
-      gdouble rate;
+      gdouble rate, arate;
       GstFormat fmt;
       gint64 start, stop, position;
+      GstSegment *segment;
 
-      gst_event_parse_new_segment (event, &update, &rate, &fmt, &start, &stop,
-          &position);
-      gst_segment_set_newsegment (&basertppayload->segment, update, rate, fmt,
-          start, stop, position);
+      segment = &basertppayload->segment;
 
+      gst_event_parse_new_segment_full (event, &update, &rate, &arate, &fmt,
+          &start, &stop, &position);
+      gst_segment_set_newsegment_full (segment, update, rate, arate, fmt, start,
+          stop, position);
+
+      basertppayload->priv->base_offset = GST_BUFFER_OFFSET_NONE;
+
+      GST_DEBUG_OBJECT (basertppayload,
+          "configured NEWSEGMENT update %d, rate %lf, applied rate %lf, "
+          "format %d, "
+          "%" G_GINT64_FORMAT " -- %" G_GINT64_FORMAT ", time %"
+          G_GINT64_FORMAT ", accum %" G_GINT64_FORMAT, update, rate, arate,
+          segment->format, segment->start, segment->stop, segment->time,
+          segment->accum);
       /* fallthrough */
     }
     default:
@@ -764,9 +782,11 @@ gst_basertppayload_prepare_push (GstBaseRTPPayload * payload,
   }
 
   /* convert to RTP time */
-  if (priv->perfect_rtptime && data.offset != GST_BUFFER_OFFSET_NONE) {
+  if (priv->perfect_rtptime && data.offset != GST_BUFFER_OFFSET_NONE &&
+      priv->base_offset != GST_BUFFER_OFFSET_NONE) {
     /* if we have an offset, use that for making an RTP timestamp */
-    data.rtptime = payload->ts_base + data.offset;
+    data.rtptime = payload->ts_base + priv->base_rtime +
+        data.offset - priv->base_offset;
     GST_LOG_OBJECT (payload,
         "Using offset %" G_GUINT64_FORMAT " for RTP timestamp", data.offset);
   } else if (GST_CLOCK_TIME_IS_VALID (data.timestamp)) {
@@ -776,12 +796,18 @@ gst_basertppayload_prepare_push (GstBaseRTPPayload * payload,
     rtime = gst_segment_to_running_time (&payload->segment, GST_FORMAT_TIME,
         data.timestamp);
 
-    GST_LOG_OBJECT (payload,
-        "Using running_time %" GST_TIME_FORMAT " for RTP timestamp",
-        GST_TIME_ARGS (rtime));
-
-    rtime = gst_util_uint64_scale_int (rtime, payload->clock_rate, GST_SECOND);
-
+    if (rtime == -1) {
+      GST_LOG_OBJECT (payload, "Clipped timestamp, using base RTP timestamp");
+      rtime = 0;
+    } else {
+      GST_LOG_OBJECT (payload,
+          "Using running_time %" GST_TIME_FORMAT " for RTP timestamp",
+          GST_TIME_ARGS (rtime));
+      rtime =
+          gst_util_uint64_scale_int (rtime, payload->clock_rate, GST_SECOND);
+      priv->base_offset = data.offset;
+      priv->base_rtime = rtime;
+    }
     /* add running_time in clock-rate units to the base timestamp */
     data.rtptime = payload->ts_base + rtime;
   } else {
@@ -808,6 +834,12 @@ gst_basertppayload_prepare_push (GstBaseRTPPayload * payload,
       GST_TIME_FORMAT, (is_list) ? -1 :
       GST_BUFFER_SIZE (GST_BUFFER (obj)), payload->seqnum, data.rtptime,
       GST_TIME_ARGS (data.timestamp));
+
+  if (g_atomic_int_compare_and_exchange (&payload->
+          priv->notified_first_timestamp, 1, 0)) {
+    g_object_notify (G_OBJECT (payload), "timestamp");
+    g_object_notify (G_OBJECT (payload), "seqnum");
+  }
 
   return GST_FLOW_OK;
 
@@ -1023,6 +1055,8 @@ gst_basertppayload_change_state (GstElement * element,
       else
         basertppayload->ts_base = basertppayload->ts_offset;
       basertppayload->timestamp = basertppayload->ts_base;
+      g_atomic_int_set (&basertppayload->priv->notified_first_timestamp, 1);
+      priv->base_offset = GST_BUFFER_OFFSET_NONE;
       break;
     default:
       break;
@@ -1031,6 +1065,9 @@ gst_basertppayload_change_state (GstElement * element,
   ret = GST_ELEMENT_CLASS (parent_class)->change_state (element, transition);
 
   switch (transition) {
+    case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+      g_atomic_int_set (&basertppayload->priv->notified_first_timestamp, 1);
+      break;
     case GST_STATE_CHANGE_READY_TO_NULL:
       break;
     default:

@@ -46,6 +46,8 @@ G_BEGIN_DECLS
 #define GST_RIFF_TAG_JUNQ GST_MAKE_FOURCC ('J','U','N','Q')
 #define GST_RIFF_TAG_idx1 GST_MAKE_FOURCC ('i','d','x','1')
 #define GST_RIFF_TAG_dmlh GST_MAKE_FOURCC ('d','m','l','h')
+#define GST_RIFF_TAG_ID32 GST_MAKE_FOURCC ('I','D','3','2')
+#define GST_RIFF_TAG_IDVX GST_MAKE_FOURCC ('I','D','V','X')
 /* WAV stuff */
 #define GST_RIFF_TAG_fmt  GST_MAKE_FOURCC ('f','m','t',' ')
 #define GST_RIFF_TAG_data GST_MAKE_FOURCC ('d','a','t','a')
@@ -444,6 +446,10 @@ typedef struct _gst_riff_strf_auds {       /* == WaveHeader (?) */
   guint32 rate;
   guint32 av_bps;
   guint16 blockalign;
+#if 0
+  /* missing field: */
+  guint16 bits_per_sample;
+#endif
   guint16 size;
 } gst_riff_strf_auds;
 
