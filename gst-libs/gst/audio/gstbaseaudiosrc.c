@@ -48,20 +48,24 @@ GST_DEBUG_CATEGORY_STATIC (gst_base_audio_src_debug);
 GType
 gst_base_audio_src_slave_method_get_type (void)
 {
-  static GType slave_method_type = 0;
+  static volatile gsize slave_method_type = 0;
+  /* FIXME 0.11: nick should be "retimestamp" not "re-timestamp" */
   static const GEnumValue slave_method[] = {
-    {GST_BASE_AUDIO_SRC_SLAVE_RESAMPLE, "Resampling slaving", "resample"},
-    {GST_BASE_AUDIO_SRC_SLAVE_RETIMESTAMP, "Re-timestamp", "re-timestamp"},
-    {GST_BASE_AUDIO_SRC_SLAVE_SKEW, "Skew", "skew"},
-    {GST_BASE_AUDIO_SRC_SLAVE_NONE, "No slaving", "none"},
+    {GST_BASE_AUDIO_SRC_SLAVE_RESAMPLE,
+        "GST_BASE_AUDIO_SRC_SLAVE_RESAMPLE", "resample"},
+    {GST_BASE_AUDIO_SRC_SLAVE_RETIMESTAMP,
+        "GST_BASE_AUDIO_SRC_SLAVE_RETIMESTAMP", "re-timestamp"},
+    {GST_BASE_AUDIO_SRC_SLAVE_SKEW, "GST_BASE_AUDIO_SRC_SLAVE_SKEW", "skew"},
+    {GST_BASE_AUDIO_SRC_SLAVE_NONE, "GST_BASE_AUDIO_SRC_SLAVE_NONE", "none"},
     {0, NULL, NULL},
   };
 
-  if (!slave_method_type) {
-    slave_method_type =
+  if (g_once_init_enter (&slave_method_type)) {
+    GType tmp =
         g_enum_register_static ("GstBaseAudioSrcSlaveMethod", slave_method);
+    g_once_init_leave (&slave_method_type, tmp);
   }
-  return slave_method_type;
+  return (GType) slave_method_type;
 }
 
 #define GST_BASE_AUDIO_SRC_GET_PRIVATE(obj)  \
@@ -189,7 +193,7 @@ gst_base_audio_src_class_init (GstBaseAudioSrcClass * klass)
       g_param_spec_int64 ("actual-buffer-time", "Actual Buffer Time",
           "Actual configured size of audio buffer in microseconds",
           DEFAULT_ACTUAL_BUFFER_TIME, G_MAXINT64, DEFAULT_ACTUAL_BUFFER_TIME,
-          G_PARAM_READABLE));
+          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
   /**
    * GstBaseAudioSrc:actual-latency-time:
@@ -202,7 +206,7 @@ gst_base_audio_src_class_init (GstBaseAudioSrcClass * klass)
       g_param_spec_int64 ("actual-latency-time", "Actual Latency Time",
           "Actual configured audio latency in microseconds",
           DEFAULT_ACTUAL_LATENCY_TIME, G_MAXINT64, DEFAULT_ACTUAL_LATENCY_TIME,
-          G_PARAM_READABLE));
+          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_PROVIDE_CLOCK,
       g_param_spec_boolean ("provide-clock", "Provide Clock",
@@ -267,9 +271,11 @@ gst_base_audio_src_dispose (GObject * object)
   src = GST_BASE_AUDIO_SRC (object);
 
   GST_OBJECT_LOCK (src);
-  if (src->clock)
+  if (src->clock) {
+    gst_audio_clock_invalidate (src->clock);
     gst_object_unref (src->clock);
-  src->clock = NULL;
+    src->clock = NULL;
+  }
 
   if (src->ringbuffer) {
     gst_object_unparent (GST_OBJECT_CAST (src->ringbuffer));
@@ -528,14 +534,17 @@ gst_base_audio_src_fixate (GstBaseSrc * bsrc, GstCaps * caps)
   /* fields for all formats */
   gst_structure_fixate_field_nearest_int (s, "rate", 44100);
   gst_structure_fixate_field_nearest_int (s, "channels", 2);
-  gst_structure_fixate_field_nearest_int (s, "width", 16);
 
-  /* fields for int */
-  if (gst_structure_has_field (s, "depth")) {
-    gst_structure_get_int (s, "width", &width);
-    /* round width to nearest multiple of 8 for the depth */
-    depth = GST_ROUND_UP_8 (width);
-    gst_structure_fixate_field_nearest_int (s, "depth", depth);
+  /* fields for int and/or float, but maybe not others like alaw/mulaw */
+  if (gst_structure_has_field (s, "width")) {
+    gst_structure_fixate_field_nearest_int (s, "width", 16);
+
+    if (gst_structure_has_field (s, "depth")) {
+      gst_structure_get_int (s, "width", &width);
+      /* round width to nearest multiple of 8 for the depth */
+      depth = GST_ROUND_UP_8 (width);
+      gst_structure_fixate_field_nearest_int (s, "depth", depth);
+    }
   }
   if (gst_structure_has_field (s, "signed"))
     gst_structure_fixate_field_boolean (s, "signed", TRUE);
@@ -554,13 +563,18 @@ gst_base_audio_src_setcaps (GstBaseSrc * bsrc, GstCaps * caps)
   spec->buffer_time = src->buffer_time;
   spec->latency_time = src->latency_time;
 
-  if (!gst_ring_buffer_parse_caps (spec, caps))
+  GST_OBJECT_LOCK (src);
+  if (!gst_ring_buffer_parse_caps (spec, caps)) {
+    GST_OBJECT_UNLOCK (src);
     goto parse_error;
+  }
 
   /* calculate suggested segsize and segtotal */
   spec->segsize =
       spec->rate * spec->bytes_per_sample * spec->latency_time / GST_MSECOND;
   spec->segtotal = spec->buffer_time / spec->latency_time;
+
+  GST_OBJECT_UNLOCK (src);
 
   GST_DEBUG ("release old ringbuffer");
 
@@ -622,9 +636,12 @@ gst_base_audio_src_query (GstBaseSrc * bsrc, GstQuery * query)
       GstClockTime min_latency, max_latency;
       GstRingBufferSpec *spec;
 
+      GST_OBJECT_LOCK (src);
       if (G_UNLIKELY (src->ringbuffer == NULL
-              || src->ringbuffer->spec.rate == 0))
+              || src->ringbuffer->spec.rate == 0)) {
+        GST_OBJECT_UNLOCK (src);
         goto done;
+      }
 
       spec = &src->ringbuffer->spec;
 
@@ -636,6 +653,7 @@ gst_base_audio_src_query (GstBaseSrc * bsrc, GstQuery * query)
       max_latency =
           gst_util_uint64_scale_int (spec->segtotal * spec->segsize, GST_SECOND,
           spec->rate * spec->bytes_per_sample);
+      GST_OBJECT_UNLOCK (src);
 
       GST_DEBUG_OBJECT (src,
           "report latency min %" GST_TIME_FORMAT " max %" GST_TIME_FORMAT,
@@ -877,7 +895,7 @@ gst_base_audio_src_create (GstBaseSrc * bsrc, guint64 offset, guint length,
         running_time_sample =
             gst_util_uint64_scale_int (running_time, spec->rate, GST_SECOND);
 
-        /* the segmentnr corrensponding to running_time, round down */
+        /* the segmentnr corresponding to running_time, round down */
         running_time_segment = running_time_sample / sps;
 
         /* the segment currently read from the ringbuffer */
@@ -903,7 +921,7 @@ gst_base_audio_src_create (GstBaseSrc * bsrc, guint64 offset, guint length,
          *
          * 1. We are more than the length of the ringbuffer behind.
          *    The length of the ringbuffer then gets to dictate
-         *    the threshold for what is concidered "too late"
+         *    the threshold for what is considered "too late"
          *
          * 2. If this is our first buffer.
          *    We know that we should catch up to running_time
@@ -1075,6 +1093,15 @@ gst_base_audio_src_change_state (GstElement * element,
       src->next_sample = -1;
       gst_ring_buffer_set_flushing (src->ringbuffer, FALSE);
       gst_ring_buffer_may_start (src->ringbuffer, FALSE);
+      /* Only post clock-provide messages if this is the clock that
+       * we've created. If the subclass has overriden it the subclass
+       * should post this messages whenever necessary */
+      if (src->clock && GST_IS_AUDIO_CLOCK (src->clock) &&
+          GST_AUDIO_CLOCK_CAST (src->clock)->func ==
+          (GstAudioClockGetTimeFunc) gst_base_audio_src_get_time)
+        gst_element_post_message (element,
+            gst_message_new_clock_provide (GST_OBJECT_CAST (element),
+                src->clock, TRUE));
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
       GST_DEBUG_OBJECT (src, "PAUSED->PLAYING");
@@ -1087,6 +1114,14 @@ gst_base_audio_src_change_state (GstElement * element,
       break;
     case GST_STATE_CHANGE_PAUSED_TO_READY:
       GST_DEBUG_OBJECT (src, "PAUSED->READY");
+      /* Only post clock-lost messages if this is the clock that
+       * we've created. If the subclass has overriden it the subclass
+       * should post this messages whenever necessary */
+      if (src->clock && GST_IS_AUDIO_CLOCK (src->clock) &&
+          GST_AUDIO_CLOCK_CAST (src->clock)->func ==
+          (GstAudioClockGetTimeFunc) gst_base_audio_src_get_time)
+        gst_element_post_message (element,
+            gst_message_new_clock_lost (GST_OBJECT_CAST (element), src->clock));
       gst_ring_buffer_set_flushing (src->ringbuffer, TRUE);
       break;
     default:
@@ -1117,7 +1152,7 @@ gst_base_audio_src_change_state (GstElement * element,
   /* ERRORS */
 open_failed:
   {
-    /* subclass must post a meaningfull error message */
+    /* subclass must post a meaningful error message */
     GST_DEBUG_OBJECT (src, "open failed");
     return GST_STATE_CHANGE_FAILURE;
   }

@@ -20,7 +20,7 @@
 #undef CDPARANOIA_HEADERS_IN_DIR
 
 /* Default audio sink */
-#define DEFAULT_AUDIOSINK "directaudiosink"
+#define DEFAULT_AUDIOSINK "directsoundsink"
 
 /* Default audio source */
 #undef DEFAULT_AUDIOSRC
@@ -53,11 +53,20 @@
 /* The GnomeVFS modules directory. */
 #undef GNOME_VFS_MODULES_DIR
 
+/* system wide data directory */
+#define GST_DATADIR PREFIX "\\share"
+
+/* Extra platform specific plugin suffix */
+#undef GST_EXTRA_MODULE_SUFFIX
+
 /* macro to use to show function name */
 #undef GST_FUNCTION
 
 /* Defined if gcov is enabled to force a rebuild due to config.h changing */
 #undef GST_GCOV_ENABLED
+
+/* Defined when registry scanning through fork is unsafe */
+#undef GST_HAVE_UNSAFE_FORK
 
 /* plugin install helper script */
 #define GST_INSTALL_PLUGINS_HELPER PREFIX "\\libexec\\gst-install-plugins-helper.exe"
@@ -68,11 +77,17 @@
 /* GStreamer license */
 #define GST_LICENSE "LGPL"
 
+/* major/minor version */
+#define GST_MAJORMINOR "0.10"
+
 /* package name in plugins */
 #define GST_PACKAGE_NAME "GStreamer Base Plug-ins source release"
 
 /* package origin */
 #define GST_PACKAGE_ORIGIN "Unknown package origin"
+
+/* GStreamer package release date/time for plugins as YYYY-MM-DD */
+#define GST_PACKAGE_RELEASE_DATETIME "2012-02-20"
 
 /* I know the API is subject to change. */
 #undef G_UDEV_API_IS_SUBJECT_TO_CHANGE
@@ -139,6 +154,9 @@
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
+
+/* Define to 1 if you have the <emmintrin.h> header file. */
+#undef HAVE_EMMINTRIN_H
 
 /* Define to enable building of experimental plug-ins. */
 #undef HAVE_EXPERIMENTAL
@@ -209,6 +227,9 @@
 /* Define to 1 if you have the `localtime_r' function. */
 #undef HAVE_LOCALTIME_R
 
+/* Define to 1 if you have the `log2' function. */
+#undef HAVE_LOG2
+
 /* Define if you have C99's lrint function. */
 #undef HAVE_LRINT
 
@@ -226,6 +247,9 @@
 
 /* Use Orc */
 #undef HAVE_ORC
+
+/* Defined if compiling for OSX */
+#undef HAVE_OSX
 
 /* Define to enable Pango font rendering (used by pango). */
 #undef HAVE_PANGO
@@ -278,17 +302,26 @@
 /* defined if vorbis_synthesis_restart is present */
 #undef HAVE_VORBIS_SYNTHESIS_RESTART
 
+/* Defined if compiling for Windows */
+#define HAVE_WIN32 1
+
 /* Define to 1 if you have the <winsock2.h> header file. */
 #define HAVE_WINSOCK2_H 1
 
 /* Define to enable X libraries and plugins (used by ximagesink). */
 #undef HAVE_X
 
+/* Define to 1 if you have the <xmmintrin.h> header file. */
+#undef HAVE_XMMINTRIN_H
+
 /* Define to enable X Shared Memory extension. */
 #undef HAVE_XSHM
 
 /* Define to enable X11 XVideo extensions (used by xvimagesink). */
 #undef HAVE_XVIDEO
+
+/* Define to enable zlib support for ID3 parsing in libgsttag. */
+#undef HAVE_ZLIB
 
 /* the host CPU */
 #define HOST_CPU "i686"
@@ -325,7 +358,7 @@
 #define PACKAGE_NAME "GStreamer Base Plug-ins"
 
 /* Define to the full name and version of this package. */
-#define PACKAGE_STRING "GStreamer Base Plug-ins 0.10.30"
+#define PACKAGE_STRING "GStreamer Base Plug-ins 0.10.36"
 
 /* Define to the one symbol short name of this package. */
 #define PACKAGE_TARNAME "gst-plugins-base"
@@ -334,7 +367,7 @@
 #undef PACKAGE_URL
 
 /* Define to the version of this package. */
-#define PACKAGE_VERSION "0.10.30"
+#define PACKAGE_VERSION "0.10.36"
 
 /* directory where plugins are located */
 #ifdef _DEBUG
@@ -361,8 +394,11 @@
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
 
+/* "Define if building for android" */
+#undef USE_TREMOLO
+
 /* Version number of package */
-#define VERSION "0.10.30"
+#define VERSION "0.10.36"
 
 /* Define WORDS_BIGENDIAN to 1 if your processor stores words with the most
    significant byte first (like Motorola and SPARC, unlike Intel). */
@@ -387,3 +423,6 @@
 
 /* Define for large files, on AIX-style hosts. */
 #undef _LARGE_FILES
+
+/* We need at least WinXP SP2 for __stat64 */
+#undef __MSVCRT_VERSION__

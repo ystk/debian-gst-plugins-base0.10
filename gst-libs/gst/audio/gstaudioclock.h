@@ -60,14 +60,13 @@ typedef GstClockTime (*GstAudioClockGetTimeFunc) (GstClock *clock, gpointer user
 
 /**
  * GstAudioClock:
- * @clock: parent #GstSystemClock
  *
  * Opaque #GstAudioClock.
  */
 struct _GstAudioClock {
   GstSystemClock clock;
 
-  /* --- protected --- */
+  /*< protected >*/
   GstAudioClockGetTimeFunc func;
   gpointer user_data;
 
@@ -77,6 +76,7 @@ struct _GstAudioClock {
   union {
     struct {
       GstClockTimeDiff   time_offset;
+      GDestroyNotify     destroy_notify;
     } ABI;
     /* adding + 0 to mark ABI change to be undone later */
     gpointer _gst_reserved[GST_PADDING + 0];
@@ -93,10 +93,14 @@ struct _GstAudioClockClass {
 GType           gst_audio_clock_get_type        (void);
 GstClock*       gst_audio_clock_new             (const gchar *name, GstAudioClockGetTimeFunc func,
                                                  gpointer user_data);
+GstClock*       gst_audio_clock_new_full        (const gchar *name, GstAudioClockGetTimeFunc func,
+                                                 gpointer user_data, GDestroyNotify destroy_notify);
 void            gst_audio_clock_reset           (GstAudioClock *clock, GstClockTime time);
 
 GstClockTime    gst_audio_clock_get_time        (GstClock * clock);
 GstClockTime    gst_audio_clock_adjust          (GstClock * clock, GstClockTime time);
+
+void            gst_audio_clock_invalidate      (GstClock * clock);
 
 G_END_DECLS
 

@@ -54,25 +54,25 @@ static guint gst_rtsp_extension_signals[LAST_SIGNAL] = { 0 };
 GType
 gst_rtsp_extension_get_type (void)
 {
-  static GType gst_rtsp_extension_type = 0;
+  static volatile gsize gst_rtsp_extension_type = 0;
+  static const GTypeInfo gst_rtsp_extension_info = {
+    sizeof (GstRTSPExtensionInterface),
+    (GBaseInitFunc) gst_rtsp_extension_iface_init,
+    NULL,
+    NULL,
+    NULL,
+    NULL,
+    0,
+    0,
+    NULL,
+  };
 
-  if (!gst_rtsp_extension_type) {
-    static const GTypeInfo gst_rtsp_extension_info = {
-      sizeof (GstRTSPExtensionInterface),
-      (GBaseInitFunc) gst_rtsp_extension_iface_init,
-      NULL,
-      NULL,
-      NULL,
-      NULL,
-      0,
-      0,
-      NULL,
-    };
-
-    gst_rtsp_extension_type = g_type_register_static (G_TYPE_INTERFACE,
+  if (g_once_init_enter (&gst_rtsp_extension_type)) {
+    GType tmp = g_type_register_static (G_TYPE_INTERFACE,
         "GstRTSPExtension", &gst_rtsp_extension_info, 0);
+    g_once_init_leave (&gst_rtsp_extension_type, tmp);
   }
-  return gst_rtsp_extension_type;
+  return (GType) gst_rtsp_extension_type;
 }
 
 static void
@@ -84,7 +84,7 @@ gst_rtsp_extension_iface_init (GstRTSPExtension * iface)
     gst_rtsp_extension_signals[SIGNAL_SEND] =
         g_signal_new ("send", G_TYPE_FROM_CLASS (iface),
         G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstRTSPExtensionInterface,
-            send), NULL, NULL, gst_rtsp_marshal_ENUM__POINTER_POINTER,
+            send), NULL, NULL, __gst_rtsp_marshal_ENUM__POINTER_POINTER,
         GST_TYPE_RTSP_RESULT, 2, G_TYPE_POINTER, G_TYPE_POINTER);
     initialized = TRUE;
   }

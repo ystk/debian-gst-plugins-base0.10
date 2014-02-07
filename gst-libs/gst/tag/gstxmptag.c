@@ -35,12 +35,43 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+#include "tag.h"
 #include <gst/gsttagsetter.h>
 #include "gsttageditingprivate.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
+
+static const gchar *schema_list[] = {
+  "dc",
+  "xap",
+  "tiff",
+  "exif",
+  "photoshop",
+  "Iptc4xmpCore",
+  "Iptc4xmpExt",
+  NULL
+};
+
+/**
+ * gst_tag_xmp_list_schemas:
+ *
+ * Gets the list of supported schemas in the xmp lib
+ *
+ * Returns: a %NULL terminated array of strings with the schema names
+ *
+ * Since: 0.10.33
+ */
+const gchar **
+gst_tag_xmp_list_schemas (void)
+{
+  return schema_list;
+}
+
+typedef struct _XmpSerializationData XmpSerializationData;
+typedef struct _XmpTag XmpTag;
 
 /*
  * Serializes a GValue into a string.
@@ -49,88 +80,226 @@ typedef gchar *(*XmpSerializationFunc) (const GValue * value);
 
 /*
  * Deserializes @str that is the gstreamer tag @gst_tag represented in
- * XMP as the @xmp_tag and adds the result to the @taglist.
+ * XMP as the @xmp_tag_value and adds the result to the @taglist.
  *
  * @pending_tags is passed so that compound xmp tags can search for its
  * complements on the list and use them. Note that used complements should
  * be freed and removed from the list.
  * The list is of PendingXmpTag
  */
-typedef void (*XmpDeserializationFunc) (GstTagList * taglist,
-    const gchar * gst_tag, const gchar * xmp_tag,
+typedef void (*XmpDeserializationFunc) (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag_value,
     const gchar * str, GSList ** pending_tags);
+
+struct _XmpSerializationData
+{
+  GString *data;
+  const gchar **schemas;
+};
+
+static gboolean
+xmp_serialization_data_use_schema (XmpSerializationData * serdata,
+    const gchar * schemaname)
+{
+  gint i = 0;
+  if (serdata->schemas == NULL)
+    return TRUE;
+
+  while (serdata->schemas[i] != NULL) {
+    if (strcmp (serdata->schemas[i], schemaname) == 0)
+      return TRUE;
+    i++;
+  }
+  return FALSE;
+}
+
+typedef enum
+{
+  GstXmpTagTypeNone = 0,
+  GstXmpTagTypeSimple,
+  GstXmpTagTypeBag,
+  GstXmpTagTypeSeq,
+  GstXmpTagTypeStruct,
+
+  /* Not really a xmp type, this is a tag that in gst is represented with
+   * a single value and on xmp it needs 2 (or more) simple values
+   *
+   * e.g. GST_TAG_GEO_LOCATION_ELEVATION needs to be mapped into 2 complementary
+   * tags in the exif's schema. One of them stores the absolute elevation,
+   * and the other one stores if it is above of below sea level.
+   */
+  GstXmpTagTypeCompound
+} GstXmpTagType;
 
 struct _XmpTag
 {
+  const gchar *gst_tag;
   const gchar *tag_name;
+  GstXmpTagType type;
+
+  /* some tags must be inside a Bag even
+   * if they are a single entry. Set it here so we know */
+  GstXmpTagType supertype;
+
+  /* For tags that need a rdf:parseType attribute */
+  const gchar *parse_type;
+
+  /* Used for struct and compound types */
+  GSList *children;
+
   XmpSerializationFunc serialize;
   XmpDeserializationFunc deserialize;
 };
-typedef struct _XmpTag XmpTag;
+
+static GstTagMergeMode
+xmp_tag_get_merge_mode (XmpTag * xmptag)
+{
+  switch (xmptag->type) {
+    case GstXmpTagTypeBag:
+    case GstXmpTagTypeSeq:
+      return GST_TAG_MERGE_APPEND;
+    case GstXmpTagTypeSimple:
+    default:
+      return GST_TAG_MERGE_KEEP;
+  }
+}
+
+static const gchar *
+xmp_tag_type_get_name (GstXmpTagType tagtype)
+{
+  switch (tagtype) {
+    case GstXmpTagTypeSeq:
+      return "rdf:Seq";
+    case GstXmpTagTypeBag:
+      return "rdf:Bag";
+    default:
+      g_assert_not_reached ();
+  }
+}
 
 struct _PendingXmpTag
 {
-  const gchar *gst_tag;
   XmpTag *xmp_tag;
   gchar *str;
 };
 typedef struct _PendingXmpTag PendingXmpTag;
 
 /*
- * Mappings from gstreamer tags to xmp tags
- *
- * The mapping here are from a gstreamer tag (as a GQuark)
- * into a GSList of GArray of XmpTag.
- *
- * There might be multiple xmp tags that a single gstreamer tag can be
- * mapped to. For example, GST_TAG_DATE might be mapped into dc:date
- * or exif:DateTimeOriginal, hence the first list, to be able to store
- * alternative mappings of the same gstreamer tag.
- *
- * Some other tags, like GST_TAG_GEO_LOCATION_ELEVATION needs to be
- * mapped into 2 complementary tags in the exif's schema. One of them
- * stores the absolute elevation, and the other one stores if it is
- * above of below sea level. That's why we need a GArray as the item
- * of each GSList in the mapping.
+ * A schema is a mapping of strings (the tag name in gstreamer) to a list of
+ * tags in xmp (XmpTag).
  */
-static GHashTable *__xmp_tag_map;
-static GMutex *__xmp_tag_map_mutex;
+typedef GHashTable GstXmpSchema;
+#define gst_xmp_schema_lookup g_hash_table_lookup
+#define gst_xmp_schema_insert g_hash_table_insert
+static GstXmpSchema *
+gst_xmp_schema_new ()
+{
+  return g_hash_table_new (g_direct_hash, g_direct_equal);
+}
 
-#define XMP_TAG_MAP_LOCK g_mutex_lock (__xmp_tag_map_mutex)
-#define XMP_TAG_MAP_UNLOCK g_mutex_unlock (__xmp_tag_map_mutex)
+/*
+ * Mappings from schema names into the schema group of tags (GstXmpSchema)
+ */
+static GHashTable *__xmp_schemas;
 
-static void
-_xmp_tag_add_mapping (const gchar * gst_tag, GPtrArray * array)
+static GstXmpSchema *
+_gst_xmp_get_schema (const gchar * name)
 {
   GQuark key;
-  GSList *list = NULL;
+  GstXmpSchema *schema;
 
-  key = g_quark_from_string (gst_tag);
+  key = g_quark_from_string (name);
 
-  XMP_TAG_MAP_LOCK;
-  list = g_hash_table_lookup (__xmp_tag_map, GUINT_TO_POINTER (key));
-  list = g_slist_append (list, (gpointer) array);
-  g_hash_table_insert (__xmp_tag_map, GUINT_TO_POINTER (key), list);
-  XMP_TAG_MAP_UNLOCK;
+  schema = g_hash_table_lookup (__xmp_schemas, GUINT_TO_POINTER (key));
+  if (!schema) {
+    GST_WARNING ("Schema %s doesn't exist", name);
+  }
+  return schema;
 }
 
 static void
-_xmp_tag_add_simple_mapping (const gchar * gst_tag, const gchar * xmp_tag,
-    XmpSerializationFunc serialization_func,
+_gst_xmp_add_schema (const gchar * name, GstXmpSchema * schema)
+{
+  GQuark key;
+
+  key = g_quark_from_string (name);
+
+  if (g_hash_table_lookup (__xmp_schemas, GUINT_TO_POINTER (key))) {
+    GST_WARNING ("Schema %s already exists, ignoring", name);
+    g_assert_not_reached ();
+    return;
+  }
+
+  g_hash_table_insert (__xmp_schemas, GUINT_TO_POINTER (key), schema);
+}
+
+static void
+_gst_xmp_schema_add_mapping (GstXmpSchema * schema, XmpTag * tag)
+{
+  GQuark key;
+
+  key = g_quark_from_string (tag->gst_tag);
+
+  if (gst_xmp_schema_lookup (schema, GUINT_TO_POINTER (key))) {
+    GST_WARNING ("Tag %s already present for the schema", tag->gst_tag);
+    g_assert_not_reached ();
+    return;
+  }
+  gst_xmp_schema_insert (schema, GUINT_TO_POINTER (key), tag);
+}
+
+static XmpTag *
+gst_xmp_tag_create (const gchar * gst_tag, const gchar * xmp_tag,
+    gint xmp_type, XmpSerializationFunc serialization_func,
     XmpDeserializationFunc deserialization_func)
 {
   XmpTag *xmpinfo;
-  GPtrArray *array;
 
   xmpinfo = g_slice_new (XmpTag);
+  xmpinfo->gst_tag = gst_tag;
   xmpinfo->tag_name = xmp_tag;
+  xmpinfo->type = xmp_type;
+  xmpinfo->supertype = GstXmpTagTypeNone;
+  xmpinfo->parse_type = NULL;
   xmpinfo->serialize = serialization_func;
   xmpinfo->deserialize = deserialization_func;
+  xmpinfo->children = NULL;
 
-  array = g_ptr_array_sized_new (1);
-  g_ptr_array_add (array, xmpinfo);
+  return xmpinfo;
+}
 
-  _xmp_tag_add_mapping (gst_tag, array);
+static XmpTag *
+gst_xmp_tag_create_compound (const gchar * gst_tag, const gchar * xmp_tag_a,
+    const gchar * xmp_tag_b, XmpSerializationFunc serialization_func_a,
+    XmpSerializationFunc serialization_func_b,
+    XmpDeserializationFunc deserialization_func)
+{
+  XmpTag *xmptag;
+  XmpTag *xmptag_a =
+      gst_xmp_tag_create (gst_tag, xmp_tag_a, GstXmpTagTypeSimple,
+      serialization_func_a, deserialization_func);
+  XmpTag *xmptag_b =
+      gst_xmp_tag_create (gst_tag, xmp_tag_b, GstXmpTagTypeSimple,
+      serialization_func_b, deserialization_func);
+
+  xmptag =
+      gst_xmp_tag_create (gst_tag, NULL, GstXmpTagTypeCompound, NULL, NULL);
+
+  xmptag->children = g_slist_prepend (xmptag->children, xmptag_b);
+  xmptag->children = g_slist_prepend (xmptag->children, xmptag_a);
+
+  return xmptag;
+}
+
+static void
+_gst_xmp_schema_add_simple_mapping (GstXmpSchema * schema,
+    const gchar * gst_tag, const gchar * xmp_tag, gint xmp_type,
+    XmpSerializationFunc serialization_func,
+    XmpDeserializationFunc deserialization_func)
+{
+  _gst_xmp_schema_add_mapping (schema,
+      gst_xmp_tag_create (gst_tag, xmp_tag, xmp_type, serialization_func,
+          deserialization_func));
 }
 
 /*
@@ -138,55 +307,82 @@ _xmp_tag_add_simple_mapping (const gchar * gst_tag, const gchar * xmp_tag,
  * appended, and the API is not public, so we shouldn't
  * have our lists modified during usage
  */
-static GSList *
-_xmp_tag_get_mapping (const gchar * gst_tag)
+#if 0
+static GPtrArray *
+_xmp_tag_get_mapping (const gchar * gst_tag, XmpSerializationData * serdata)
 {
-  GSList *ret = NULL;
+  GPtrArray *ret = NULL;
+  GHashTableIter iter;
   GQuark key = g_quark_from_string (gst_tag);
+  gpointer iterkey, value;
+  const gchar *schemaname;
 
-  XMP_TAG_MAP_LOCK;
-  ret = (GSList *) g_hash_table_lookup (__xmp_tag_map, GUINT_TO_POINTER (key));
-  XMP_TAG_MAP_UNLOCK;
+  g_hash_table_iter_init (&iter, __xmp_schemas);
+  while (!ret && g_hash_table_iter_next (&iter, &iterkey, &value)) {
+    GstXmpSchema *schema = (GstXmpSchema *) value;
 
+    schemaname = g_quark_to_string (GPOINTER_TO_UINT (iterkey));
+    if (xmp_serialization_data_use_schema (serdata, schemaname))
+      ret =
+          (GPtrArray *) gst_xmp_schema_lookup (schema, GUINT_TO_POINTER (key));
+  }
   return ret;
 }
+#endif
 
-/* finds the gst tag that maps to this xmp tag */
+/* finds the gst tag that maps to this xmp tag in this schema */
 static const gchar *
-_xmp_tag_get_mapping_reverse (const gchar * xmp_tag, XmpTag ** _xmp_tag)
+_gst_xmp_schema_get_mapping_reverse (GstXmpSchema * schema,
+    const gchar * xmp_tag, XmpTag ** _xmp_tag)
 {
   GHashTableIter iter;
   gpointer key, value;
   const gchar *ret = NULL;
-  GSList *walk;
-  gint index;
-
-  XMP_TAG_MAP_LOCK;
 
   /* Iterate over the hashtable */
-  g_hash_table_iter_init (&iter, __xmp_tag_map);
+  g_hash_table_iter_init (&iter, schema);
   while (!ret && g_hash_table_iter_next (&iter, &key, &value)) {
-    GSList *list = (GSList *) value;
+    XmpTag *xmpinfo = (XmpTag *) value;
 
-    /* each entry might contain multiple mappigns */
-    for (walk = list; walk; walk = g_slist_next (walk)) {
-      GPtrArray *array = (GPtrArray *) walk->data;
-
-      /* each mapping might contain complementary tags */
-      for (index = 0; index < array->len; index++) {
-        XmpTag *xmpinfo = (XmpTag *) g_ptr_array_index (array, index);
-
-        if (strcmp (xmpinfo->tag_name, xmp_tag) == 0) {
-          *_xmp_tag = xmpinfo;
+    if (xmpinfo->tag_name) {
+      if (strcmp (xmpinfo->tag_name, xmp_tag) == 0) {
+        *_xmp_tag = xmpinfo;
+        ret = g_quark_to_string (GPOINTER_TO_UINT (key));
+        goto out;
+      }
+    } else if (xmpinfo->children) {
+      GSList *iter;
+      for (iter = xmpinfo->children; iter; iter = g_slist_next (iter)) {
+        XmpTag *child = iter->data;
+        if (strcmp (child->tag_name, xmp_tag) == 0) {
+          *_xmp_tag = child;
           ret = g_quark_to_string (GPOINTER_TO_UINT (key));
           goto out;
         }
       }
+    } else {
+      g_assert_not_reached ();
     }
   }
 
 out:
-  XMP_TAG_MAP_UNLOCK;
+  return ret;
+}
+
+/* finds the gst tag that maps to this xmp tag (searches on all schemas) */
+static const gchar *
+_gst_xmp_tag_get_mapping_reverse (const gchar * xmp_tag, XmpTag ** _xmp_tag)
+{
+  GHashTableIter iter;
+  gpointer key, value;
+  const gchar *ret = NULL;
+
+  /* Iterate over the hashtable */
+  g_hash_table_iter_init (&iter, __xmp_schemas);
+  while (!ret && g_hash_table_iter_next (&iter, &key, &value)) {
+    ret = _gst_xmp_schema_get_mapping_reverse ((GstXmpSchema *) value, xmp_tag,
+        _xmp_tag);
+  }
   return ret;
 }
 
@@ -247,8 +443,8 @@ serialize_exif_longitude (const GValue * value)
 }
 
 static void
-deserialize_exif_gps_coordinate (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * str, gchar pos, gchar neg)
+deserialize_exif_gps_coordinate (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * str, gchar pos, gchar neg)
 {
   gdouble value = 0;
   gint d = 0, m = 0, s = 0;
@@ -310,7 +506,8 @@ end:
     goto error;
   }
 
-  gst_tag_list_add (taglist, GST_TAG_MERGE_REPLACE, gst_tag, value, NULL);
+  gst_tag_list_add (taglist, xmp_tag_get_merge_mode (xmptag), gst_tag, value,
+      NULL);
   return;
 
 error:
@@ -318,17 +515,19 @@ error:
 }
 
 static void
-deserialize_exif_latitude (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_exif_latitude (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
-  deserialize_exif_gps_coordinate (taglist, gst_tag, str, 'N', 'S');
+  deserialize_exif_gps_coordinate (xmptag, taglist, gst_tag, str, 'N', 'S');
 }
 
 static void
-deserialize_exif_longitude (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_exif_longitude (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
-  deserialize_exif_gps_coordinate (taglist, gst_tag, str, 'E', 'W');
+  deserialize_exif_gps_coordinate (xmptag, taglist, gst_tag, str, 'E', 'W');
 }
 
 static gchar *
@@ -358,8 +557,9 @@ serialize_exif_altituderef (const GValue * value)
 }
 
 static void
-deserialize_exif_altitude (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_exif_altitude (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
   const gchar *altitude_str = NULL;
   const gchar *altituderef_str = NULL;
@@ -426,7 +626,7 @@ deserialize_exif_altitude (GstTagList * taglist, const gchar * gst_tag,
   }
 
   /* add to the taglist */
-  gst_tag_list_add (taglist, GST_TAG_MERGE_REPLACE,
+  gst_tag_list_add (taglist, xmp_tag_get_merge_mode (xmptag),
       GST_TAG_GEO_LOCATION_ELEVATION, value, NULL);
 
   /* clean up entry */
@@ -450,8 +650,9 @@ serialize_exif_gps_speedref (const GValue * value)
 }
 
 static void
-deserialize_exif_gps_speed (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_exif_gps_speed (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
   const gchar *speed_str = NULL;
   const gchar *speedref_str = NULL;
@@ -520,7 +721,7 @@ deserialize_exif_gps_speed (GstTagList * taglist, const gchar * gst_tag,
   }
 
   /* add to the taglist */
-  gst_tag_list_add (taglist, GST_TAG_MERGE_REPLACE,
+  gst_tag_list_add (taglist, xmp_tag_get_merge_mode (xmptag),
       GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, value, NULL);
 
   /* clean up entry */
@@ -543,9 +744,10 @@ serialize_exif_gps_directionref (const GValue * value)
 }
 
 static void
-deserialize_exif_gps_direction (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags,
-    const gchar * direction_tag, const gchar * directionref_tag)
+deserialize_exif_gps_direction (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags, const gchar * direction_tag,
+    const gchar * directionref_tag)
 {
   const gchar *dir_str = NULL;
   const gchar *dirref_str = NULL;
@@ -613,7 +815,8 @@ deserialize_exif_gps_direction (GstTagList * taglist, const gchar * gst_tag,
   }
 
   /* add to the taglist */
-  gst_tag_list_add (taglist, GST_TAG_MERGE_REPLACE, gst_tag, value, NULL);
+  gst_tag_list_add (taglist, xmp_tag_get_merge_mode (xmptag), gst_tag, value,
+      NULL);
 
   /* clean up entry */
   g_free (ptag->str);
@@ -622,24 +825,27 @@ deserialize_exif_gps_direction (GstTagList * taglist, const gchar * gst_tag,
 }
 
 static void
-deserialize_exif_gps_track (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_exif_gps_track (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
-  deserialize_exif_gps_direction (taglist, gst_tag, xmp_tag, str, pending_tags,
-      "exif:GPSTrack", "exif:GPSTrackRef");
+  deserialize_exif_gps_direction (xmptag, taglist, gst_tag, xmp_tag, str,
+      pending_tags, "exif:GPSTrack", "exif:GPSTrackRef");
 }
 
 static void
-deserialize_exif_gps_img_direction (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_exif_gps_img_direction (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
-  deserialize_exif_gps_direction (taglist, gst_tag, xmp_tag, str, pending_tags,
-      "exif:GPSImgDirection", "exif:GPSImgDirectionRef");
+  deserialize_exif_gps_direction (xmptag, taglist, gst_tag, xmp_tag, str,
+      pending_tags, "exif:GPSImgDirection", "exif:GPSImgDirectionRef");
 }
 
 static void
-deserialize_xmp_rating (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_xmp_rating (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
   guint value;
 
@@ -648,13 +854,14 @@ deserialize_xmp_rating (GstTagList * taglist, const gchar * gst_tag,
     return;
   }
 
-  if (value < 0 || value > 100) {
+  if (value > 100) {
     GST_WARNING ("Unsupported Rating tag %u (should be from 0 to 100), "
         "ignoring", value);
     return;
   }
 
-  gst_tag_list_add (taglist, GST_TAG_MERGE_REPLACE, gst_tag, value, NULL);
+  gst_tag_list_add (taglist, xmp_tag_get_merge_mode (xmptag), gst_tag, value,
+      NULL);
 }
 
 static gchar *
@@ -669,7 +876,7 @@ serialize_tiff_orientation (const GValue * value)
     return NULL;
   }
 
-  num = gst_tag_image_orientation_to_exif_value (str);
+  num = __exif_tag_image_orientation_to_exif_value (str);
   if (num == -1)
     return NULL;
 
@@ -677,8 +884,9 @@ serialize_tiff_orientation (const GValue * value)
 }
 
 static void
-deserialize_tiff_orientation (GstTagList * taglist, const gchar * gst_tag,
-    const gchar * xmp_tag, const gchar * str, GSList ** pending_tags)
+deserialize_tiff_orientation (XmpTag * xmptag, GstTagList * taglist,
+    const gchar * gst_tag, const gchar * xmp_tag, const gchar * str,
+    GSList ** pending_tags)
 {
   guint value;
   const gchar *orientation = NULL;
@@ -694,10 +902,11 @@ deserialize_tiff_orientation (GstTagList * taglist, const gchar * gst_tag,
     return;
   }
 
-  orientation = gst_tag_image_orientation_from_exif_value (value);
+  orientation = __exif_tag_image_orientation_from_exif_value (value);
   if (orientation == NULL)
     return;
-  gst_tag_list_add (taglist, GST_TAG_MERGE_REPLACE, gst_tag, orientation, NULL);
+  gst_tag_list_add (taglist, xmp_tag_get_merge_mode (xmptag), gst_tag,
+      orientation, NULL);
 }
 
 
@@ -705,110 +914,129 @@ deserialize_tiff_orientation (GstTagList * taglist, const gchar * gst_tag,
  * http://www.sno.phy.queensu.ca/~phil/exiftool/TagNames/XMP.html
  */
 static gpointer
-_init_xmp_tag_map ()
+_init_xmp_tag_map (gpointer user_data)
 {
-  GPtrArray *array;
   XmpTag *xmpinfo;
+  GstXmpSchema *schema;
 
-  __xmp_tag_map_mutex = g_mutex_new ();
-  __xmp_tag_map = g_hash_table_new (g_direct_hash, g_direct_equal);
+  __xmp_schemas = g_hash_table_new (g_direct_hash, g_direct_equal);
 
   /* add the maps */
   /* dublic code metadata
    * http://dublincore.org/documents/dces/
    */
-  _xmp_tag_add_simple_mapping (GST_TAG_ARTIST, "dc:creator", NULL, NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_COPYRIGHT, "dc:rights", NULL, NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_DATE, "dc:date", NULL, NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_DATE, "exif:DateTimeOriginal", NULL,
-      NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_DESCRIPTION, "dc:description", NULL,
-      NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_KEYWORDS, "dc:subject", NULL, NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_TITLE, "dc:title", NULL, NULL);
+  schema = gst_xmp_schema_new ();
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_ARTIST,
+      "dc:creator", GstXmpTagTypeSeq, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_COPYRIGHT,
+      "dc:rights", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_DATE, "dc:date",
+      GstXmpTagTypeSeq, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_DESCRIPTION,
+      "dc:description", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_KEYWORDS,
+      "dc:subject", GstXmpTagTypeBag, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_TITLE, "dc:title",
+      GstXmpTagTypeSimple, NULL, NULL);
   /* FIXME: we probably want GST_TAG_{,AUDIO_,VIDEO_}MIME_TYPE */
-  _xmp_tag_add_simple_mapping (GST_TAG_VIDEO_CODEC, "dc:format", NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_VIDEO_CODEC,
+      "dc:format", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_add_schema ("dc", schema);
 
   /* xap (xmp) schema */
-  _xmp_tag_add_simple_mapping (GST_TAG_USER_RATING, "xmp:Rating", NULL,
-      deserialize_xmp_rating);
+  schema = gst_xmp_schema_new ();
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_USER_RATING,
+      "xmp:Rating", GstXmpTagTypeSimple, NULL, deserialize_xmp_rating);
+  _gst_xmp_add_schema ("xap", schema);
 
   /* tiff */
-  _xmp_tag_add_simple_mapping (GST_TAG_DEVICE_MANUFACTURER, "tiff:Make", NULL,
+  schema = gst_xmp_schema_new ();
+  _gst_xmp_schema_add_simple_mapping (schema,
+      GST_TAG_DEVICE_MANUFACTURER, "tiff:Make", GstXmpTagTypeSimple, NULL,
       NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_DEVICE_MODEL, "tiff:Model", NULL, NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_IMAGE_ORIENTATION, "tiff:Orientation",
-      serialize_tiff_orientation, deserialize_tiff_orientation);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_DEVICE_MODEL,
+      "tiff:Model", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_APPLICATION_NAME,
+      "tiff:Software", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_IMAGE_ORIENTATION,
+      "tiff:Orientation", GstXmpTagTypeSimple, serialize_tiff_orientation,
+      deserialize_tiff_orientation);
+  _gst_xmp_add_schema ("tiff", schema);
 
   /* exif schema */
-  _xmp_tag_add_simple_mapping (GST_TAG_GEO_LOCATION_LATITUDE,
-      "exif:GPSLatitude", serialize_exif_latitude, deserialize_exif_latitude);
-  _xmp_tag_add_simple_mapping (GST_TAG_GEO_LOCATION_LONGITUDE,
-      "exif:GPSLongitude", serialize_exif_longitude,
+  schema = gst_xmp_schema_new ();
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_DATE_TIME,
+      "exif:DateTimeOriginal", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema,
+      GST_TAG_GEO_LOCATION_LATITUDE, "exif:GPSLatitude",
+      GstXmpTagTypeSimple, serialize_exif_latitude, deserialize_exif_latitude);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_GEO_LOCATION_LONGITUDE,
+      "exif:GPSLongitude", GstXmpTagTypeSimple, serialize_exif_longitude,
       deserialize_exif_longitude);
+  _gst_xmp_schema_add_simple_mapping (schema,
+      GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, "exif:ExposureBiasValue",
+      GstXmpTagTypeSimple, NULL, NULL);
 
   /* compound exif tags */
-  array = g_ptr_array_sized_new (2);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSAltitude";
-  xmpinfo->serialize = serialize_exif_altitude;
-  xmpinfo->deserialize = deserialize_exif_altitude;
-  g_ptr_array_add (array, xmpinfo);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSAltitudeRef";
-  xmpinfo->serialize = serialize_exif_altituderef;
-  xmpinfo->deserialize = deserialize_exif_altitude;
-  g_ptr_array_add (array, xmpinfo);
-  _xmp_tag_add_mapping (GST_TAG_GEO_LOCATION_ELEVATION, array);
+  xmpinfo = gst_xmp_tag_create_compound (GST_TAG_GEO_LOCATION_ELEVATION,
+      "exif:GPSAltitude", "exif:GPSAltitudeRef", serialize_exif_altitude,
+      serialize_exif_altituderef, deserialize_exif_altitude);
+  _gst_xmp_schema_add_mapping (schema, xmpinfo);
 
-  array = g_ptr_array_sized_new (2);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSSpeed";
-  xmpinfo->serialize = serialize_exif_gps_speed;
-  xmpinfo->deserialize = deserialize_exif_gps_speed;
-  g_ptr_array_add (array, xmpinfo);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSSpeedRef";
-  xmpinfo->serialize = serialize_exif_gps_speedref;
-  xmpinfo->deserialize = deserialize_exif_gps_speed;
-  g_ptr_array_add (array, xmpinfo);
-  _xmp_tag_add_mapping (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED, array);
+  xmpinfo = gst_xmp_tag_create_compound (GST_TAG_GEO_LOCATION_MOVEMENT_SPEED,
+      "exif:GPSSpeed", "exif:GPSSpeedRef", serialize_exif_gps_speed,
+      serialize_exif_gps_speedref, deserialize_exif_gps_speed);
+  _gst_xmp_schema_add_mapping (schema, xmpinfo);
 
-  array = g_ptr_array_sized_new (2);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSTrack";
-  xmpinfo->serialize = serialize_exif_gps_direction;
-  xmpinfo->deserialize = deserialize_exif_gps_track;
-  g_ptr_array_add (array, xmpinfo);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSTrackRef";
-  xmpinfo->serialize = serialize_exif_gps_directionref;
-  xmpinfo->deserialize = deserialize_exif_gps_track;
-  g_ptr_array_add (array, xmpinfo);
-  _xmp_tag_add_mapping (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION, array);
+  xmpinfo =
+      gst_xmp_tag_create_compound (GST_TAG_GEO_LOCATION_MOVEMENT_DIRECTION,
+      "exif:GPSTrack", "exif:GPSTrackRef", serialize_exif_gps_direction,
+      serialize_exif_gps_directionref, deserialize_exif_gps_track);
+  _gst_xmp_schema_add_mapping (schema, xmpinfo);
 
-  array = g_ptr_array_sized_new (2);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSImgDirection";
-  xmpinfo->serialize = serialize_exif_gps_direction;
-  xmpinfo->deserialize = deserialize_exif_gps_img_direction;
-  g_ptr_array_add (array, xmpinfo);
-  xmpinfo = g_slice_new (XmpTag);
-  xmpinfo->tag_name = "exif:GPSImgDirectionRef";
-  xmpinfo->serialize = serialize_exif_gps_directionref;
-  xmpinfo->deserialize = deserialize_exif_gps_img_direction;
-  g_ptr_array_add (array, xmpinfo);
-  _xmp_tag_add_mapping (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION, array);
+  xmpinfo = gst_xmp_tag_create_compound (GST_TAG_GEO_LOCATION_CAPTURE_DIRECTION,
+      "exif:GPSImgDirection", "exif:GPSImgDirectionRef",
+      serialize_exif_gps_direction, serialize_exif_gps_directionref,
+      deserialize_exif_gps_img_direction);
+  _gst_xmp_schema_add_mapping (schema, xmpinfo);
+
+  _gst_xmp_add_schema ("exif", schema);
 
   /* photoshop schema */
-  _xmp_tag_add_simple_mapping (GST_TAG_GEO_LOCATION_COUNTRY,
-      "photoshop:Country", NULL, NULL);
-  _xmp_tag_add_simple_mapping (GST_TAG_GEO_LOCATION_CITY, "photoshop:City",
-      NULL, NULL);
+  schema = gst_xmp_schema_new ();
+  _gst_xmp_schema_add_simple_mapping (schema,
+      GST_TAG_GEO_LOCATION_COUNTRY, "photoshop:Country",
+      GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_schema_add_simple_mapping (schema, GST_TAG_GEO_LOCATION_CITY,
+      "photoshop:City", GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_add_schema ("photoshop", schema);
 
   /* iptc4xmpcore schema */
-  _xmp_tag_add_simple_mapping (GST_TAG_GEO_LOCATION_SUBLOCATION,
-      "Iptc4xmpCore:Location", NULL, NULL);
+  schema = gst_xmp_schema_new ();
+  _gst_xmp_schema_add_simple_mapping (schema,
+      GST_TAG_GEO_LOCATION_SUBLOCATION, "Iptc4xmpCore:Location",
+      GstXmpTagTypeSimple, NULL, NULL);
+  _gst_xmp_add_schema ("Iptc4xmpCore", schema);
+
+  /* iptc4xmpext schema */
+  schema = gst_xmp_schema_new ();
+  xmpinfo = gst_xmp_tag_create (NULL, "Iptc4xmpExt:LocationShown",
+      GstXmpTagTypeStruct, NULL, NULL);
+  xmpinfo->supertype = GstXmpTagTypeBag;
+  xmpinfo->parse_type = "Resource";
+  xmpinfo->children = g_slist_prepend (xmpinfo->children,
+      gst_xmp_tag_create (GST_TAG_GEO_LOCATION_SUBLOCATION,
+          "LocationDetails:Sublocation", GstXmpTagTypeSimple, NULL, NULL));
+  xmpinfo->children =
+      g_slist_prepend (xmpinfo->children,
+      gst_xmp_tag_create (GST_TAG_GEO_LOCATION_CITY,
+          "LocationDetails:City", GstXmpTagTypeSimple, NULL, NULL));
+  xmpinfo->children =
+      g_slist_prepend (xmpinfo->children,
+      gst_xmp_tag_create (GST_TAG_GEO_LOCATION_COUNTRY,
+          "LocationDetails:Country", GstXmpTagTypeSimple, NULL, NULL));
+  _gst_xmp_schema_add_mapping (schema, xmpinfo);
+  _gst_xmp_add_schema ("Iptc4xmpExt", schema);
 
   return NULL;
 }
@@ -817,7 +1045,7 @@ static void
 xmp_tags_initialize ()
 {
   static GOnce my_once = G_ONCE_INIT;
-  g_once (&my_once, _init_xmp_tag_map, NULL);
+  g_once (&my_once, (GThreadFunc) _init_xmp_tag_map, NULL);
 }
 
 typedef struct _GstXmpNamespaceMatch GstXmpNamespaceMatch;
@@ -825,16 +1053,26 @@ struct _GstXmpNamespaceMatch
 {
   const gchar *ns_prefix;
   const gchar *ns_uri;
+
+  /*
+   * Stores extra namespaces for array tags
+   * The namespaces should be writen in the form:
+   *
+   * xmlns:XpTo="http://some.org/your/ns/name/ (next ones)"
+   */
+  const gchar *extra_ns;
 };
 
 static const GstXmpNamespaceMatch ns_match[] = {
-  {"dc", "http://purl.org/dc/elements/1.1/"},
-  {"exif", "http://ns.adobe.com/exif/1.0/"},
-  {"tiff", "http://ns.adobe.com/tiff/1.0/"},
-  {"xap", "http://ns.adobe.com/xap/1.0/"},
-  {"photoshop", "http://ns.adobe.com/photoshop/1.0/"},
-  {"Iptc4xmpCore", "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/"},
-  {NULL, NULL}
+  {"dc", "http://purl.org/dc/elements/1.1/", NULL},
+  {"exif", "http://ns.adobe.com/exif/1.0/", NULL},
+  {"tiff", "http://ns.adobe.com/tiff/1.0/", NULL},
+  {"xap", "http://ns.adobe.com/xap/1.0/", NULL},
+  {"photoshop", "http://ns.adobe.com/photoshop/1.0/", NULL},
+  {"Iptc4xmpCore", "http://iptc.org/std/Iptc4xmpCore/1.0/xmlns/", NULL},
+  {"Iptc4xmpExt", "http://iptc.org/std/Iptc4xmpExt/2008-02-29/",
+      "xmlns:LocationDetails=\"http://iptc.org/std/Iptc4xmpExt/2008-02-29/LocationDetails/\""},
+  {NULL, NULL, NULL}
 };
 
 typedef struct _GstXmpNamespaceMap GstXmpNamespaceMap;
@@ -843,39 +1081,147 @@ struct _GstXmpNamespaceMap
   const gchar *original_ns;
   gchar *gstreamer_ns;
 };
-static GstXmpNamespaceMap ns_map[] = {
-  {"dc", NULL},
-  {"exif", NULL},
-  {"tiff", NULL},
-  {"xap", NULL},
-  {"photoshop", NULL},
-  {"Iptc4xmpCore", NULL},
-  {NULL, NULL}
-};
 
 /* parsing */
 
 static void
-read_one_tag (GstTagList * list, const gchar * tag, XmpTag * xmptag,
+read_one_tag (GstTagList * list, XmpTag * xmptag,
     const gchar * v, GSList ** pending_tags)
 {
   GType tag_type;
+  GstTagMergeMode merge_mode;
+  const gchar *tag = xmptag->gst_tag;
 
-  if (xmptag && xmptag->deserialize) {
-    xmptag->deserialize (list, tag, xmptag->tag_name, v, pending_tags);
+  g_return_if_fail (tag != NULL);
+
+  if (xmptag->deserialize) {
+    xmptag->deserialize (xmptag, list, tag, xmptag->tag_name, v, pending_tags);
     return;
   }
 
+  merge_mode = xmp_tag_get_merge_mode (xmptag);
   tag_type = gst_tag_get_type (tag);
 
   /* add gstreamer tag depending on type */
   switch (tag_type) {
     case G_TYPE_STRING:{
-      gst_tag_list_add (list, GST_TAG_MERGE_REPLACE, tag, v, NULL);
+      gst_tag_list_add (list, merge_mode, tag, v, NULL);
+      break;
+    }
+    case G_TYPE_DOUBLE:{
+      gdouble value = 0;
+      gint frac_n, frac_d;
+
+      if (sscanf (v, "%d/%d", &frac_n, &frac_d) == 2) {
+        gst_util_fraction_to_double (frac_n, frac_d, &value);
+        gst_tag_list_add (list, merge_mode, tag, value, NULL);
+      } else {
+        GST_WARNING ("Failed to parse fraction: %s", v);
+      }
       break;
     }
     default:
-      if (tag_type == GST_TYPE_DATE) {
+      if (tag_type == GST_TYPE_DATE_TIME) {
+        GstDateTime *datetime = NULL;
+        gint year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
+        gint usecs = 0;
+        gint gmt_offset_hour = -1, gmt_offset_min = -1, gmt_offset = -1;
+        gchar usec_str[16];
+        gint ret;
+        gint len;
+
+        len = strlen (v);
+        if (len == 0) {
+          GST_WARNING ("Empty string for datetime parsing");
+          return;
+        }
+
+        GST_DEBUG ("Parsing %s into a datetime", v);
+
+        ret = sscanf (v, "%04d-%02d-%02dT%02d:%02d:%02d.%15s",
+            &year, &month, &day, &hour, &minute, &second, usec_str);
+        if (ret < 3) {
+          /* FIXME theoretically, xmp can express datetimes with only year
+           * or year and month, but gstdatetime doesn't support it */
+          GST_WARNING ("Invalid datetime value: %s", v);
+        }
+
+        /* parse the usecs */
+        if (ret >= 7) {
+          gint num_digits = 0;
+
+          /* find the number of digits */
+          while (isdigit ((gint) usec_str[num_digits++]) && num_digits < 6);
+
+          if (num_digits > 0) {
+            /* fill up to 6 digits with 0 */
+            while (num_digits < 6) {
+              usec_str[num_digits++] = 0;
+            }
+
+            g_assert (num_digits == 6);
+
+            usec_str[num_digits] = '\0';
+            usecs = atoi (usec_str);
+          }
+        }
+
+        /* parse the timezone info */
+        if (v[len - 1] == 'Z') {
+          GST_LOG ("UTC timezone");
+
+          /* Having a Z at the end means UTC */
+          datetime = gst_date_time_new (0, year, month, day, hour, minute,
+              second + usecs / 1000000.0);
+        } else {
+          gchar *plus_pos = NULL;
+          gchar *neg_pos = NULL;
+          gchar *pos = NULL;
+
+          GST_LOG ("Checking for timezone information");
+
+          /* check if there is timezone info */
+          plus_pos = strrchr (v, '+');
+          neg_pos = strrchr (v, '-');
+          if (plus_pos) {
+            pos = plus_pos + 1;
+          } else if (neg_pos) {
+            pos = neg_pos + 1;
+          }
+
+          if (pos) {
+            gint ret_tz = sscanf (pos, "%d:%d", &gmt_offset_hour,
+                &gmt_offset_min);
+
+            GST_DEBUG ("Parsing timezone: %s", pos);
+
+            if (ret_tz == 2) {
+              gmt_offset = gmt_offset_hour * 60 + gmt_offset_min;
+              if (neg_pos != NULL && neg_pos + 1 == pos)
+                gmt_offset *= -1;
+
+              GST_LOG ("Timezone offset: %f (%d minutes)", gmt_offset / 60.0,
+                  gmt_offset);
+
+              /* no way to know if it is DST or not */
+              datetime =
+                  gst_date_time_new (gmt_offset / 60.0,
+                  year, month, day, hour, minute,
+                  second + usecs / ((gdouble) G_USEC_PER_SEC));
+            } else {
+              GST_WARNING ("Failed to parse timezone information");
+            }
+          } else {
+            GST_WARNING ("No timezone signal found");
+          }
+        }
+
+        if (datetime) {
+          gst_tag_list_add (list, merge_mode, tag, datetime, NULL);
+          gst_date_time_unref (datetime);
+        }
+
+      } else if (tag_type == GST_TYPE_DATE) {
         GDate *date;
         gint d, m, y;
 
@@ -896,7 +1242,7 @@ read_one_tag (GstTagList * list, const gchar * tag, XmpTag * xmptag,
            date = g_date_new ();
            g_date_set_parse (date, v);
            if (g_date_valid (date)) {
-           gst_tag_list_add (list, GST_TAG_MERGE_REPLACE, tag,
+           gst_tag_list_add (list, merge_mode, tag,
            date, NULL);
            } else {
            GST_WARNING ("unparsable date: '%s'", v);
@@ -905,7 +1251,7 @@ read_one_tag (GstTagList * list, const gchar * tag, XmpTag * xmptag,
         /* poor mans straw */
         sscanf (v, "%04d-%02d-%02dT", &y, &m, &d);
         date = g_date_new_dmy (d, m, y);
-        gst_tag_list_add (list, GST_TAG_MERGE_REPLACE, tag, date, NULL);
+        gst_tag_list_add (list, merge_mode, tag, date, NULL);
         g_date_free (date);
       } else {
         GST_WARNING ("unhandled type for %s from xmp", tag);
@@ -933,14 +1279,29 @@ gst_tag_list_from_xmp_buffer (const GstBuffer * buffer)
   gboolean in_tag;
   gchar *part, *pp;
   guint i;
-  const gchar *last_tag = NULL;
   XmpTag *last_xmp_tag = NULL;
   GSList *pending_tags = NULL;
+
+  /* Used for strucuture xmp tags */
+  XmpTag *context_tag = NULL;
+
+  GstXmpNamespaceMap ns_map[] = {
+    {"dc", NULL},
+    {"exif", NULL},
+    {"tiff", NULL},
+    {"xap", NULL},
+    {"photoshop", NULL},
+    {"Iptc4xmpCore", NULL},
+    {"Iptc4xmpExt", NULL},
+    {NULL, NULL}
+  };
 
   xmp_tags_initialize ();
 
   g_return_val_if_fail (GST_IS_BUFFER (buffer), NULL);
   g_return_val_if_fail (GST_BUFFER_SIZE (buffer) > 0, NULL);
+
+  GST_LOG ("Starting xmp parsing");
 
   xps = (const gchar *) GST_BUFFER_DATA (buffer);
   len = GST_BUFFER_SIZE (buffer);
@@ -956,7 +1317,10 @@ gst_tag_list_from_xmp_buffer (const GstBuffer * buffer)
   if (*xp1 != '>')
     goto missing_header;
 
-  max_ft_len = 1 + strlen ("<?xpacket end=\".\"?>\n");
+  /* Use 2 here to count for an extra trailing \n that was added
+   * in old versions, this makes it able to parse xmp packets with
+   * and without this trailing char */
+  max_ft_len = 2 + strlen ("<?xpacket end=\".\"?>");
   if (len < max_ft_len)
     goto missing_footer;
 
@@ -1041,19 +1405,41 @@ gst_tag_list_from_xmp_buffer (const GstBuffer * buffer)
                   }
                 }
               } else {
-                const gchar *gst_tag;
                 XmpTag *xmp_tag = NULL;
-                /* FIXME: eventualy rewrite ns
+                /* FIXME: eventually rewrite ns
                  * find ':'
                  * check if ns before ':' is in ns_map and ns_map[i].gstreamer_ns!=NULL
                  * do 2 stage filter in tag_matches
                  */
-                gst_tag = _xmp_tag_get_mapping_reverse (as, &xmp_tag);
-                if (gst_tag) {
+                if (context_tag) {
+                  GSList *iter;
+
+                  for (iter = context_tag->children; iter;
+                      iter = g_slist_next (iter)) {
+                    XmpTag *child = iter->data;
+
+                    GST_DEBUG ("Looking at child tag %s : %s", child->tag_name,
+                        as);
+                    if (strcmp (child->tag_name, as) == 0) {
+                      xmp_tag = child;
+                      break;
+                    }
+                  }
+
+                } else {
+                  GST_LOG ("Looking for tag: %s", as);
+                  _gst_xmp_tag_get_mapping_reverse (as, &xmp_tag);
+                }
+                if (xmp_tag) {
                   PendingXmpTag *ptag;
 
+                  GST_DEBUG ("Found xmp tag: %s -> %s", xmp_tag->tag_name,
+                      xmp_tag->gst_tag);
+
+                  /* we shouldn't find a xmp structure here */
+                  g_assert (xmp_tag->gst_tag != NULL);
+
                   ptag = g_slice_new (PendingXmpTag);
-                  ptag->gst_tag = gst_tag;
                   ptag->xmp_tag = xmp_tag;
                   ptag->str = g_strdup (v);
 
@@ -1076,19 +1462,46 @@ gst_tag_list_from_xmp_buffer (const GstBuffer * buffer)
              <dc:type><rdf:Bag><rdf:li>Image</rdf:li></rdf:Bag></dc:type>
              <dc:creator><rdf:Seq><rdf:li/></rdf:Seq></dc:creator>
            */
-          /* FIXME: eventualy rewrite ns */
+          /* FIXME: eventually rewrite ns */
 
           /* skip rdf tags for now */
           if (strncmp (part, "rdf:", 4)) {
-            const gchar *parttag;
+            /* if we're inside some struct, we look only on its children */
+            if (context_tag) {
+              GSList *iter;
 
-            parttag = _xmp_tag_get_mapping_reverse (part, &last_xmp_tag);
-            if (parttag) {
-              last_tag = parttag;
+              /* check if this is the closing of the context */
+              if (part[0] == '/'
+                  && strcmp (part + 1, context_tag->tag_name) == 0) {
+                GST_DEBUG ("Closing context tag %s", part);
+                context_tag = NULL;
+              } else {
+
+                for (iter = context_tag->children; iter;
+                    iter = g_slist_next (iter)) {
+                  XmpTag *child = iter->data;
+
+                  GST_DEBUG ("Looking at child tag %s : %s", child->tag_name,
+                      part);
+                  if (strcmp (child->tag_name, part) == 0) {
+                    last_xmp_tag = child;
+                    break;
+                  }
+                }
+              }
+
+            } else {
+              GST_LOG ("Looking for tag: %s", part);
+              _gst_xmp_tag_get_mapping_reverse (part, &last_xmp_tag);
+              if (last_xmp_tag && last_xmp_tag->type == GstXmpTagTypeStruct) {
+                context_tag = last_xmp_tag;
+                last_xmp_tag = NULL;
+              }
             }
           }
         }
       }
+      GST_LOG ("Next cycle");
       /* next cycle */
       ne++;
       if (ne < xp2) {
@@ -1108,15 +1521,23 @@ gst_tag_list_from_xmp_buffer (const GstBuffer * buffer)
       if (ns[0] != '\n' && &ns[1] <= ne) {
         /* only log non-newline nodes, we still have to parse them */
         GST_INFO ("txt: %s", part);
-        if (last_tag) {
+        if (last_xmp_tag) {
           PendingXmpTag *ptag;
 
-          ptag = g_slice_new (PendingXmpTag);
-          ptag->gst_tag = last_tag;
-          ptag->xmp_tag = last_xmp_tag;
-          ptag->str = g_strdup (part);
+          GST_DEBUG ("Found tag %s -> %s", last_xmp_tag->tag_name,
+              last_xmp_tag->gst_tag);
 
-          pending_tags = g_slist_append (pending_tags, ptag);
+          if (last_xmp_tag->type == GstXmpTagTypeStruct) {
+            g_assert (context_tag == NULL);     /* we can't handle struct nesting currently */
+
+            context_tag = last_xmp_tag;
+          } else {
+            ptag = g_slice_new (PendingXmpTag);
+            ptag->xmp_tag = last_xmp_tag;
+            ptag->str = g_strdup (part);
+
+            pending_tags = g_slist_append (pending_tags, ptag);
+          }
         }
       }
       /* next cycle */
@@ -1131,7 +1552,7 @@ gst_tag_list_from_xmp_buffer (const GstBuffer * buffer)
 
     pending_tags = g_slist_delete_link (pending_tags, pending_tags);
 
-    read_one_tag (list, ptag->gst_tag, ptag->xmp_tag, ptag->str, &pending_tags);
+    read_one_tag (list, ptag->xmp_tag, ptag->str, &pending_tags);
 
     g_free (ptag->str);
     g_slice_free (PendingXmpTag, ptag);
@@ -1191,6 +1612,8 @@ gst_value_serialize_xmp (const GValue * value)
       return g_strdup_printf ("%d", g_value_get_int (value));
     case G_TYPE_UINT:
       return g_strdup_printf ("%u", g_value_get_uint (value));
+    case G_TYPE_DOUBLE:
+      return double_to_fraction_string (g_value_get_double (value));
     default:
       break;
   }
@@ -1201,76 +1624,242 @@ gst_value_serialize_xmp (const GValue * value)
     return g_strdup_printf ("%04d-%02d-%02d",
         (gint) g_date_get_year (date), (gint) g_date_get_month (date),
         (gint) g_date_get_day (date));
+  } else if (G_VALUE_TYPE (value) == GST_TYPE_DATE_TIME) {
+    gint year, month, day, hour, min, sec, microsec;
+    gfloat gmt_offset = 0;
+    gint gmt_offset_hour, gmt_offset_min;
+    GstDateTime *datetime = (GstDateTime *) g_value_get_boxed (value);
+
+    year = gst_date_time_get_year (datetime);
+    month = gst_date_time_get_month (datetime);
+    day = gst_date_time_get_day (datetime);
+    hour = gst_date_time_get_hour (datetime);
+    min = gst_date_time_get_minute (datetime);
+    sec = gst_date_time_get_second (datetime);
+    microsec = gst_date_time_get_microsecond (datetime);
+    gmt_offset = gst_date_time_get_time_zone_offset (datetime);
+    if (gmt_offset == 0) {
+      /* UTC */
+      return g_strdup_printf ("%04d-%02d-%02dT%02d:%02d:%02d.%06dZ",
+          year, month, day, hour, min, sec, microsec);
+    } else {
+      gmt_offset_hour = ABS (gmt_offset);
+      gmt_offset_min = (ABS (gmt_offset) - gmt_offset_hour) * 60;
+
+      return g_strdup_printf ("%04d-%02d-%02dT%02d:%02d:%02d.%06d%c%02d:%02d",
+          year, month, day, hour, min, sec, microsec,
+          gmt_offset >= 0 ? '+' : '-', gmt_offset_hour, gmt_offset_min);
+    }
   } else {
     return NULL;
   }
 }
 
 static void
-write_one_tag (const GstTagList * list, const gchar * tag, gpointer user_data)
+write_one_tag (const GstTagList * list, XmpTag * xmp_tag, gpointer user_data)
 {
-  guint i = 0, ct = gst_tag_list_get_tag_size (list, tag), tag_index;
-  GString *data = user_data;
-  GPtrArray *xmp_tag_array = NULL;
+  guint i = 0, ct;
+  XmpSerializationData *serialization_data = user_data;
+  GString *data = serialization_data->data;
   char *s;
-  GSList *xmptaglist;
 
-  /* map gst-tag to xmp tag */
-  xmptaglist = _xmp_tag_get_mapping (tag);
-  if (xmptaglist) {
-    /* FIXME - we are always chosing the first tag mapped on the list */
-    xmp_tag_array = (GPtrArray *) xmptaglist->data;
-  }
+  /* struct type handled differently */
+  if (xmp_tag->type == GstXmpTagTypeStruct ||
+      xmp_tag->type == GstXmpTagTypeCompound) {
+    GSList *iter;
+    gboolean use_it = FALSE;
 
-  if (!xmp_tag_array) {
-    GST_WARNING ("no mapping for %s to xmp", tag);
+    /* check if any of the inner tags are present on the taglist */
+    for (iter = xmp_tag->children; iter && !use_it; iter = g_slist_next (iter)) {
+      XmpTag *child_tag = iter->data;
+
+      if (gst_tag_list_get_value_index (list, child_tag->gst_tag, 0) != NULL) {
+        use_it = TRUE;
+        break;
+      }
+    }
+
+    if (use_it) {
+      if (xmp_tag->tag_name)
+        string_open_tag (data, xmp_tag->tag_name);
+
+      if (xmp_tag->supertype) {
+        string_open_tag (data, xmp_tag_type_get_name (xmp_tag->supertype));
+        if (xmp_tag->parse_type) {
+          g_string_append (data, "<rdf:li rdf:parseType=\"");
+          g_string_append (data, xmp_tag->parse_type);
+          g_string_append_c (data, '"');
+          g_string_append_c (data, '>');
+        } else {
+          string_open_tag (data, "rdf:li");
+        }
+      }
+
+      /* now write it */
+      for (iter = xmp_tag->children; iter; iter = g_slist_next (iter)) {
+        write_one_tag (list, iter->data, user_data);
+      }
+
+      if (xmp_tag->supertype) {
+        string_close_tag (data, "rdf:li");
+        string_close_tag (data, xmp_tag_type_get_name (xmp_tag->supertype));
+      }
+
+      if (xmp_tag->tag_name)
+        string_close_tag (data, xmp_tag->tag_name);
+    }
     return;
   }
 
-  for (tag_index = 0; tag_index < xmp_tag_array->len; tag_index++) {
-    XmpTag *xmp_tag;
+  /* at this point we must have a gst_tag */
+  g_assert (xmp_tag->gst_tag);
+  if (gst_tag_list_get_value_index (list, xmp_tag->gst_tag, 0) == NULL)
+    return;
 
-    xmp_tag = g_ptr_array_index (xmp_tag_array, tag_index);
-    string_open_tag (data, xmp_tag->tag_name);
+  ct = gst_tag_list_get_tag_size (list, xmp_tag->gst_tag);
+  string_open_tag (data, xmp_tag->tag_name);
 
-    /* fast path for single valued tag */
-    if (ct == 1) {
+  /* fast path for single valued tag */
+  if (ct == 1 || xmp_tag->type == GstXmpTagTypeSimple) {
+    if (xmp_tag->serialize) {
+      s = xmp_tag->serialize (gst_tag_list_get_value_index (list,
+              xmp_tag->gst_tag, 0));
+    } else {
+      s = gst_value_serialize_xmp (gst_tag_list_get_value_index (list,
+              xmp_tag->gst_tag, 0));
+    }
+    if (s) {
+      g_string_append (data, s);
+      g_free (s);
+    } else {
+      GST_WARNING ("unhandled type for %s to xmp", xmp_tag->gst_tag);
+    }
+  } else {
+    const gchar *typename;
+
+    typename = xmp_tag_type_get_name (xmp_tag->type);
+
+    string_open_tag (data, typename);
+    for (i = 0; i < ct; i++) {
+      GST_DEBUG ("mapping %s[%u/%u] to xmp", xmp_tag->gst_tag, i, ct);
       if (xmp_tag->serialize) {
-        s = xmp_tag->serialize (gst_tag_list_get_value_index (list, tag, 0));
+        s = xmp_tag->serialize (gst_tag_list_get_value_index (list,
+                xmp_tag->gst_tag, i));
       } else {
-        s = gst_value_serialize_xmp (gst_tag_list_get_value_index (list, tag,
-                0));
+        s = gst_value_serialize_xmp (gst_tag_list_get_value_index (list,
+                xmp_tag->gst_tag, i));
       }
       if (s) {
+        string_open_tag (data, "rdf:li");
         g_string_append (data, s);
+        string_close_tag (data, "rdf:li");
         g_free (s);
       } else {
-        GST_WARNING ("unhandled type for %s to xmp", tag);
+        GST_WARNING ("unhandled type for %s to xmp", xmp_tag->gst_tag);
       }
-    } else {
-      string_open_tag (data, "rdf:Bag");
-      for (i = 0; i < ct; i++) {
-        GST_DEBUG ("mapping %s[%u/%u] to xmp", tag, i, ct);
-        if (xmp_tag->serialize) {
-          s = xmp_tag->serialize (gst_tag_list_get_value_index (list, tag, i));
-        } else {
-          s = gst_value_serialize_xmp (gst_tag_list_get_value_index (list, tag,
-                  i));
-        }
-        if (s) {
-          string_open_tag (data, "rdf:li");
-          g_string_append (data, s);
-          string_close_tag (data, "rdf:li");
-          g_free (s);
-        } else {
-          GST_WARNING ("unhandled type for %s to xmp", tag);
-        }
-      }
-      string_close_tag (data, "rdf:Bag");
     }
-
-    string_close_tag (data, xmp_tag->tag_name);
+    string_close_tag (data, typename);
   }
+
+  string_close_tag (data, xmp_tag->tag_name);
+}
+
+/**
+ * gst_tag_list_to_xmp_buffer_full:
+ * @list: tags
+ * @read_only: does the container forbid inplace editing
+ * @schemas: %NULL terminated array of schemas to be used on serialization
+ *
+ * Formats a taglist as a xmp packet using only the selected
+ * schemas. An empty list (%NULL) means that all schemas should
+ * be used
+ *
+ * Returns: new buffer or %NULL, unref the buffer when done
+ *
+ * Since: 0.10.33
+ */
+GstBuffer *
+gst_tag_list_to_xmp_buffer_full (const GstTagList * list, gboolean read_only,
+    const gchar ** schemas)
+{
+  GstBuffer *buffer = NULL;
+  XmpSerializationData serialization_data;
+  GString *data;
+  guint i;
+
+  serialization_data.data = g_string_sized_new (4096);
+  serialization_data.schemas = schemas;
+  data = serialization_data.data;
+
+  xmp_tags_initialize ();
+
+  g_return_val_if_fail (GST_IS_TAG_LIST (list), NULL);
+
+  /* xmp header */
+  g_string_append (data,
+      "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
+  g_string_append (data,
+      "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"GStreamer\">\n");
+  g_string_append (data,
+      "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"");
+  i = 0;
+  while (ns_match[i].ns_prefix) {
+    if (xmp_serialization_data_use_schema (&serialization_data,
+            ns_match[i].ns_prefix)) {
+      g_string_append_printf (data, " xmlns:%s=\"%s\"",
+          ns_match[i].ns_prefix, ns_match[i].ns_uri);
+      if (ns_match[i].extra_ns) {
+        g_string_append_printf (data, " %s", ns_match[i].extra_ns);
+      }
+    }
+    i++;
+  }
+  g_string_append (data, ">\n");
+  g_string_append (data, "<rdf:Description rdf:about=\"\">\n");
+
+  /* iterate the schemas */
+  if (schemas == NULL) {
+    /* use all schemas */
+    schemas = gst_tag_xmp_list_schemas ();
+  }
+  for (i = 0; schemas[i] != NULL; i++) {
+    GstXmpSchema *schema = _gst_xmp_get_schema (schemas[i]);
+    GHashTableIter iter;
+    gpointer key, value;
+
+    if (schema == NULL)
+      continue;
+
+    /* Iterate over the hashtable */
+    g_hash_table_iter_init (&iter, schema);
+    while (g_hash_table_iter_next (&iter, &key, &value)) {
+      write_one_tag (list, value, (gpointer) & serialization_data);
+    }
+  }
+
+  /* xmp footer */
+  g_string_append (data, "</rdf:Description>\n");
+  g_string_append (data, "</rdf:RDF>\n");
+  g_string_append (data, "</x:xmpmeta>\n");
+
+  if (!read_only) {
+    /* the xmp spec recommends to add 2-4KB padding for in-place editable xmp */
+    guint i;
+
+    for (i = 0; i < 32; i++) {
+      g_string_append (data, "                " "                "
+          "                " "                " "\n");
+    }
+  }
+  g_string_append_printf (data, "<?xpacket end=\"%c\"?>",
+      (read_only ? 'r' : 'w'));
+
+  buffer = gst_buffer_new ();
+  GST_BUFFER_SIZE (buffer) = data->len;
+  GST_BUFFER_DATA (buffer) = (guint8 *) g_string_free (data, FALSE);
+  GST_BUFFER_MALLOCDATA (buffer) = GST_BUFFER_DATA (buffer);
+
+  return buffer;
 }
 
 /**
@@ -1287,54 +1876,8 @@ write_one_tag (const GstTagList * list, const gchar * tag, gpointer user_data)
 GstBuffer *
 gst_tag_list_to_xmp_buffer (const GstTagList * list, gboolean read_only)
 {
-  GstBuffer *buffer = NULL;
-  GString *data = g_string_sized_new (4096);
-  guint i;
-
-  xmp_tags_initialize ();
-
-  g_return_val_if_fail (GST_IS_TAG_LIST (list), NULL);
-
-  /* xmp header */
-  g_string_append (data,
-      "<?xpacket begin=\"\xEF\xBB\xBF\" id=\"W5M0MpCehiHzreSzNTczkc9d\"?>\n");
-  g_string_append (data,
-      "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\" x:xmptk=\"GStreamer\">\n");
-  g_string_append (data,
-      "<rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"");
-  i = 0;
-  while (ns_match[i].ns_prefix) {
-    g_string_append_printf (data, " xmlns:%s=\"%s\"", ns_match[i].ns_prefix,
-        ns_match[i].ns_uri);
-    i++;
-  }
-  g_string_append (data, ">\n");
-  g_string_append (data, "<rdf:Description rdf:about=\"\">\n");
-
-  /* iterate the taglist */
-  gst_tag_list_foreach (list, write_one_tag, data);
-
-  /* xmp footer */
-  g_string_append (data, "</rdf:Description>\n");
-  g_string_append (data, "</rdf:RDF>\n");
-  g_string_append (data, "</x:xmpmeta>\n");
-
-  if (!read_only) {
-    /* the xmp spec recommand to add 2-4KB padding for in-place editable xmp */
-    guint i;
-
-    for (i = 0; i < 32; i++) {
-      g_string_append (data, "                " "                "
-          "                " "                " "\n");
-    }
-  }
-  g_string_append_printf (data, "<?xpacket end=\"%c\"?>\n",
-      (read_only ? 'r' : 'w'));
-
-  buffer = gst_buffer_new ();
-  GST_BUFFER_SIZE (buffer) = data->len + 1;
-  GST_BUFFER_DATA (buffer) = (guint8 *) g_string_free (data, FALSE);
-  GST_BUFFER_MALLOCDATA (buffer) = GST_BUFFER_DATA (buffer);
-
-  return buffer;
+  return gst_tag_list_to_xmp_buffer_full (list, read_only, NULL);
 }
+
+#undef gst_xmp_schema_lookup
+#undef gst_xmp_schema_insert

@@ -52,10 +52,11 @@ typedef struct _GstXOverlayClass GstXOverlayClass;
 /**
  * GstXOverlayClass:
  * @klass: parent interface type.
- * @set_xwindow_id: virtual method to configure the XWindow id
+ * @set_xwindow_id: (deprecated) virtual method to configure the XWindow handle
  * @expose: virtual method to handle expose events
  * @handle_events: virtual method to handle events
  * @set_render_rectangle: virtual method to set the render rectangle (since 0.10.29)
+ * @set_window_handle: virtual method to configure the window handle
  *
  * #GstXOverlay interface
  */
@@ -63,27 +64,38 @@ struct _GstXOverlayClass {
   GTypeInterface klass;
 
   /* virtual functions */
+#ifndef GST_DISABLE_DEPRECATED
   void (* set_xwindow_id)      (GstXOverlay *overlay,
                                 gulong       xwindow_id);
+#else
+#ifndef __GTK_DOC_IGNORE__
+  void (* set_xwindow_id_disabled) (GstXOverlay *overlay,
+                                gulong       xwindow_id);
+#endif
+#endif /* not GST_DISABLE_DEPRECATED */
 
   void (* expose)              (GstXOverlay *overlay);
-  
+
   void (* handle_events)       (GstXOverlay *overlay,
-                                gboolean     handle_events);  
+                                gboolean     handle_events);
 
   void (* set_render_rectangle) (GstXOverlay *overlay,
                                  gint x, gint y,
                                  gint width, gint height);
 
+  void (* set_window_handle)   (GstXOverlay *overlay,
+                                guintptr    handle);
     /*< private >*/
-  gpointer                 _gst_reserved[GST_PADDING - 2];
+  gpointer                 _gst_reserved[GST_PADDING - 3];
 };
 
 GType   gst_x_overlay_get_type          (void);
 
 /* virtual class function wrappers */
-void gst_x_overlay_set_xwindow_id      (GstXOverlay *overlay, 
+#ifndef GST_DISABLE_DEPRECATED
+void gst_x_overlay_set_xwindow_id      (GstXOverlay *overlay,
                                         gulong xwindow_id);
+#endif
 
 gboolean gst_x_overlay_set_render_rectangle (GstXOverlay *overlay,
                                              gint x, gint y,
@@ -94,9 +106,16 @@ void gst_x_overlay_expose              (GstXOverlay *overlay);
 void gst_x_overlay_handle_events       (GstXOverlay *overlay,
                                         gboolean     handle_events);
 
+void gst_x_overlay_set_window_handle   (GstXOverlay *overlay,
+                                        guintptr handle);
 
 /* public methods to dispatch bus messages */
+#ifndef GST_DISABLE_DEPRECATED
 void gst_x_overlay_got_xwindow_id     (GstXOverlay *overlay, gulong xwindow_id);
+#endif
+
+void gst_x_overlay_got_window_handle  (GstXOverlay *overlay,
+    guintptr handle);
 
 void gst_x_overlay_prepare_xwindow_id (GstXOverlay *overlay);
 

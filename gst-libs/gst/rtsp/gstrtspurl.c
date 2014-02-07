@@ -54,37 +54,31 @@
 
 #include "gstrtspurl.h"
 
-static void
-register_rtsp_url_type (GType * id)
-{
-  *id = g_boxed_type_register_static ("GstRTSPUrl",
-      (GBoxedCopyFunc) gst_rtsp_url_copy, (GBoxedFreeFunc) gst_rtsp_url_free);
-}
-
 GType
 gst_rtsp_url_get_type (void)
 {
-  static GType id;
-  static GOnce once = G_ONCE_INIT;
+  static volatile gsize url_type = 0;
 
-  g_once (&once, (GThreadFunc) register_rtsp_url_type, &id);
-  return id;
+  if (g_once_init_enter (&url_type)) {
+    GType tmp = g_boxed_type_register_static ("GstRTSPUrl",
+        (GBoxedCopyFunc) gst_rtsp_url_copy, (GBoxedFreeFunc) gst_rtsp_url_free);
+    g_once_init_leave (&url_type, tmp);
+  }
+
+  return (GType) url_type;
 }
 
-static const gchar *rtsp_url_schemes[] = {
-  "rtsp",
-  "rtspu",
-  "rtspt",
-  "rtsph",
-  NULL
-};
-
-static GstRTSPLowerTrans rtsp_url_transports[] = {
-  GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP |
-      GST_RTSP_LOWER_TRANS_UDP_MCAST,
-  GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_UDP_MCAST,
-  GST_RTSP_LOWER_TRANS_TCP,
-  GST_RTSP_LOWER_TRANS_HTTP | GST_RTSP_LOWER_TRANS_TCP,
+static const struct
+{
+  const char scheme[6];
+  GstRTSPLowerTrans transports;
+} rtsp_schemes_map[] = {
+  {
+  "rtsp", GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP |
+        GST_RTSP_LOWER_TRANS_UDP_MCAST}, {
+  "rtspu", GST_RTSP_LOWER_TRANS_UDP | GST_RTSP_LOWER_TRANS_UDP_MCAST}, {
+  "rtspt", GST_RTSP_LOWER_TRANS_TCP}, {
+  "rtsph", GST_RTSP_LOWER_TRANS_HTTP | GST_RTSP_LOWER_TRANS_TCP}
 };
 
 /* format is rtsp[u]://[user:passwd@]host[:port]/abspath[?query] where host
@@ -109,7 +103,7 @@ gst_rtsp_url_parse (const gchar * urlstr, GstRTSPUrl ** url)
   GstRTSPUrl *res;
   gchar *p, *delim, *at, *col;
   gchar *host_end = NULL;
-  guint scheme;
+  guint i;
 
   g_return_val_if_fail (urlstr != NULL, GST_RTSP_EINVAL);
   g_return_val_if_fail (url != NULL, GST_RTSP_EINVAL);
@@ -122,9 +116,9 @@ gst_rtsp_url_parse (const gchar * urlstr, GstRTSPUrl ** url)
   if (col == NULL)
     goto invalid;
 
-  for (scheme = 0; rtsp_url_schemes[scheme] != NULL; scheme++) {
-    if (g_ascii_strncasecmp (rtsp_url_schemes[scheme], p, col - p) == 0) {
-      res->transports = rtsp_url_transports[scheme];
+  for (i = 0; i < G_N_ELEMENTS (rtsp_schemes_map); i++) {
+    if (g_ascii_strncasecmp (rtsp_schemes_map[i].scheme, p, col - p) == 0) {
+      res->transports = rtsp_schemes_map[i].transports;
       p = col + 3;
       break;
     }
@@ -346,4 +340,77 @@ gst_rtsp_url_get_request_uri (const GstRTSPUrl * url)
   }
 
   return uri;
+}
+
+static int
+hex_to_int (gchar c)
+{
+  if (c >= '0' && c <= '9')
+    return c - '0';
+  else if (c >= 'a' && c <= 'f')
+    return c - 'a' + 10;
+  else if (c >= 'A' && c <= 'F')
+    return c - 'A' + 10;
+  else
+    return -1;
+}
+
+static void
+unescape_path_component (gchar * comp)
+{
+  guint len = strlen (comp);
+  guint i;
+
+  for (i = 0; i + 2 < len; i++)
+    if (comp[i] == '%') {
+      int a, b;
+
+      a = hex_to_int (comp[i + 1]);
+      b = hex_to_int (comp[i + 2]);
+
+      /* The a||b check is to ensure that the byte is not '\0' */
+      if (a >= 0 && b >= 0 && (a || b)) {
+        comp[i] = (gchar) (a * 16 + b);
+        memmove (comp + i + 1, comp + i + 3, len - i - 3);
+        len -= 2;
+        comp[len] = '\0';
+      }
+    }
+}
+
+/**
+ * gst_rtsp_url_decode_path_components:
+ * @url: a #GstRTSPUrl
+ *
+ * Splits the path of @url on '/' boundaries, decoding the resulting components,
+ *
+ * The decoding performed by this routine is "URI decoding", as defined in RFC
+ * 3986, commonly known as percent-decoding. For example, a string "foo\%2fbar"
+ * will decode to "foo/bar" -- the \%2f being replaced by the corresponding byte
+ * with hex value 0x2f. Note that there is no guarantee that the resulting byte
+ * sequence is valid in any given encoding. As a special case, \%00 is not
+ * unescaped to NUL, as that would prematurely terminate the string.
+ *
+ * Also note that since paths usually start with a slash, the first component
+ * will usually be the empty string.
+ *
+ * Returns: a string vector. g_strfreev() after usage.
+ *
+ * Since: 0.10.32
+ */
+gchar **
+gst_rtsp_url_decode_path_components (const GstRTSPUrl * url)
+{
+  gchar **ret;
+  guint i;
+
+  g_return_val_if_fail (url != NULL, NULL);
+  g_return_val_if_fail (url->abspath != NULL, NULL);
+
+  ret = g_strsplit (url->abspath, "/", -1);
+
+  for (i = 0; ret[i]; i++)
+    unescape_path_component (ret[i]);
+
+  return ret;
 }

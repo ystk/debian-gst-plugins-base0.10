@@ -67,7 +67,7 @@
  * prefer a minimum burst size even if it requires not starting with a keyframe.
  *
  * Multifdsink can be instructed to keep at least a minimum amount of data
- * expressed in time or byte units in its internal queues with the the 
+ * expressed in time or byte units in its internal queues with the 
  * #GstMultiFdSink:time-min and #GstMultiFdSink:bytes-min properties respectively.
  * These properties are useful if the application adds clients with the 
  * #GstMultiFdSink::add-full signal to make sure that a burst connect can
@@ -101,6 +101,11 @@
 #ifdef HAVE_CONFIG_H
 #include "config.h"
 #endif
+
+/* FIXME 0.11: suppress warnings for deprecated API such as GStaticRecMutex
+ * with newer GLib versions (>= 2.31.0) */
+#define GLIB_DISABLE_DEPRECATION_WARNINGS
+
 #include <gst/gst-i18n-plugin.h>
 
 #include <sys/ioctl.h>
@@ -355,8 +360,7 @@ gst_multi_fd_sink_base_init (gpointer g_class)
 {
   GstElementClass *element_class = GST_ELEMENT_CLASS (g_class);
 
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&sinktemplate));
+  gst_element_class_add_static_pad_template (element_class, &sinktemplate);
 
   gst_element_class_set_details_simple (element_class,
       "Multi filedescriptor sink", "Sink/Network",
@@ -381,7 +385,8 @@ gst_multi_fd_sink_class_init (GstMultiFdSinkClass * klass)
   gobject_class->finalize = gst_multi_fd_sink_finalize;
 
   g_object_class_install_property (gobject_class, PROP_PROTOCOL,
-      g_param_spec_enum ("protocol", "Protocol", "The protocol to wrap data in",
+      g_param_spec_enum ("protocol", "Protocol", "The protocol to wrap data in"
+          ". GDP protocol here is deprecated. Please use gdppay element.",
           GST_TYPE_TCP_PROTOCOL, DEFAULT_PROTOCOL,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
@@ -820,7 +825,7 @@ gst_multi_fd_sink_add_full (GstMultiFdSink * sink, int fd,
   GstTCPClient *client;
   GList *clink;
   GTimeVal now;
-  gint flags, res;
+  gint flags;
   struct stat statbuf;
 
   GST_DEBUG_OBJECT (sink, "[fd %5d] adding client, sync_method %d, "
@@ -845,6 +850,8 @@ gst_multi_fd_sink_add_full (GstMultiFdSink * sink, int fd,
   client->bytes_sent = 0;
   client->dropped_buffers = 0;
   client->avg_queue_size = 0;
+  client->first_buffer_ts = GST_CLOCK_TIME_NONE;
+  client->last_buffer_ts = GST_CLOCK_TIME_NONE;
   client->new_connection = TRUE;
   client->burst_min_unit = min_unit;
   client->burst_min_value = min_value;
@@ -873,7 +880,11 @@ gst_multi_fd_sink_add_full (GstMultiFdSink * sink, int fd,
   sink->clients_cookie++;
 
   /* set the socket to non blocking */
-  res = fcntl (fd, F_SETFL, O_NONBLOCK);
+  if (fcntl (fd, F_SETFL, O_NONBLOCK) < 0) {
+    GST_ERROR_OBJECT (sink, "failed to make socket %d non-blocking: %s", fd,
+        g_strerror (errno));
+  }
+
   /* we always read from a client */
   gst_poll_add_fd (sink->fdset, &client->fd);
 
@@ -885,8 +896,7 @@ gst_multi_fd_sink_add_full (GstMultiFdSink * sink, int fd,
     }
   }
   /* figure out the mode, can't use send() for non sockets */
-  res = fstat (fd, &statbuf);
-  if (S_ISSOCK (statbuf.st_mode)) {
+  if (fstat (fd, &statbuf) == 0 && S_ISSOCK (statbuf.st_mode)) {
     client->is_socket = TRUE;
     setup_dscp_client (sink, client);
   }
@@ -922,7 +932,7 @@ duplicate:
   }
 }
 
-/* "add" signal implemntation */
+/* "add" signal implementation */
 void
 gst_multi_fd_sink_add (GstMultiFdSink * sink, int fd)
 {
@@ -1035,6 +1045,8 @@ restart:
  * guint64 : time the client is/was connected (in nanoseconds)
  * guint64 : last activity time (in nanoseconds, since Epoch)
  * guint64 : buffers dropped due to recovery
+ * guint64 : timestamp of the first buffer sent (in nanoseconds)
+ * guint64 : timestamp of the last buffer sent (in nanoseconds)
  */
 GValueArray *
 gst_multi_fd_sink_get_stats (GstMultiFdSink * sink, int fd)
@@ -1053,7 +1065,7 @@ gst_multi_fd_sink_get_stats (GstMultiFdSink * sink, int fd)
     GValue value = { 0 };
     guint64 interval;
 
-    result = g_value_array_new (5);
+    result = g_value_array_new (7);
 
     g_value_init (&value, G_TYPE_UINT64);
     g_value_set_uint64 (&value, client->bytes_sent);
@@ -1086,6 +1098,14 @@ gst_multi_fd_sink_get_stats (GstMultiFdSink * sink, int fd)
     g_value_unset (&value);
     g_value_init (&value, G_TYPE_UINT64);
     g_value_set_uint64 (&value, client->dropped_buffers);
+    result = g_value_array_append (result, &value);
+    g_value_unset (&value);
+    g_value_init (&value, G_TYPE_UINT64);
+    g_value_set_uint64 (&value, client->first_buffer_ts);
+    result = g_value_array_append (result, &value);
+    g_value_unset (&value);
+    g_value_init (&value, G_TYPE_UINT64);
+    g_value_set_uint64 (&value, client->last_buffer_ts);
     result = g_value_array_append (result, &value);
   }
 
@@ -1852,7 +1872,6 @@ gst_multi_fd_sink_new_client (GstMultiFdSink * sink, GstTCPClient * client)
     }
     case GST_SYNC_METHOD_BURST_KEYFRAME:
     {
-      gboolean ok;
       gint min_idx, max_idx;
       gint next_syncframe, prev_syncframe;
 
@@ -1864,7 +1883,7 @@ gst_multi_fd_sink_new_client (GstMultiFdSink * sink, GstTCPClient * client)
        * NEXT_KEYFRAME.
        */
       /* gather burst limits */
-      ok = count_burst_unit (sink, &min_idx, client->burst_min_unit,
+      count_burst_unit (sink, &min_idx, client->burst_min_unit,
           client->burst_min_value, &max_idx, client->burst_max_unit,
           client->burst_max_value);
 
@@ -1901,7 +1920,6 @@ gst_multi_fd_sink_new_client (GstMultiFdSink * sink, GstTCPClient * client)
     }
     case GST_SYNC_METHOD_BURST_WITH_KEYFRAME:
     {
-      gboolean ok;
       gint min_idx, max_idx;
       gint next_syncframe;
 
@@ -1912,7 +1930,7 @@ gst_multi_fd_sink_new_client (GstMultiFdSink * sink, GstTCPClient * client)
        * amount of data up 'till min.
        */
       /* gather enough data to burst */
-      ok = count_burst_unit (sink, &min_idx, client->burst_min_unit,
+      count_burst_unit (sink, &min_idx, client->burst_min_unit,
           client->burst_min_value, &max_idx, client->burst_max_unit,
           client->burst_max_value);
 
@@ -2039,6 +2057,7 @@ gst_multi_fd_sink_handle_client_write (GstMultiFdSink * sink,
       } else {
         /* client can pick a buffer from the global queue */
         GstBuffer *buf;
+        GstClockTime timestamp;
 
         /* for new connections, we need to find a good spot in the
          * bufqueue to start streaming from */
@@ -2063,6 +2082,13 @@ gst_multi_fd_sink_handle_client_write (GstMultiFdSink * sink,
         /* grab buffer */
         buf = g_array_index (sink->bufqueue, GstBuffer *, client->bufpos);
         client->bufpos--;
+
+        /* update stats */
+        timestamp = GST_BUFFER_TIMESTAMP (buf);
+        if (client->first_buffer_ts == GST_CLOCK_TIME_NONE)
+          client->first_buffer_ts = timestamp;
+        if (timestamp != -1)
+          client->last_buffer_ts = timestamp;
 
         /* decrease flushcount */
         if (client->flushcount != -1)
@@ -2227,7 +2253,7 @@ gst_multi_fd_sink_recover_client (GstMultiFdSink * sink, GstTCPClient * client)
  *
  * Special care is taken of clients that were waiting for a new buffer (they
  * had a position of -1) because they can proceed after adding this new buffer.
- * This is done by adding the client back into the write fd_set and signalling
+ * This is done by adding the client back into the write fd_set and signaling
  * the select thread that the fd_set changed.
  */
 static void
@@ -2426,10 +2452,34 @@ gst_multi_fd_sink_handle_clients (GstMultiFdSink * sink)
      * - client socket input (ie, clients saying goodbye)
      * - client socket output (ie, client reads)          */
     GST_LOG_OBJECT (sink, "waiting on action on fdset");
-    result = gst_poll_wait (sink->fdset, GST_CLOCK_TIME_NONE);
 
-    /* < 0 is an error, 0 just means a timeout happened, which is impossible */
-    if (result < 0) {
+    result = gst_poll_wait (sink->fdset, sink->timeout != 0 ? sink->timeout :
+        GST_CLOCK_TIME_NONE);
+
+    /* Handle the special case in which the sink is not receiving more buffers
+     * and will not disconnect inactive client in the streaming thread. */
+    if (G_UNLIKELY (result == 0)) {
+      GstClockTime now;
+      GTimeVal nowtv;
+
+      g_get_current_time (&nowtv);
+      now = GST_TIMEVAL_TO_TIME (nowtv);
+
+      CLIENTS_LOCK (sink);
+      for (clients = sink->clients; clients; clients = next) {
+        GstTCPClient *client;
+
+        client = (GstTCPClient *) clients->data;
+        next = g_list_next (clients);
+        if (sink->timeout > 0
+            && now - client->last_activity_time > sink->timeout) {
+          client->status = GST_CLIENT_STATUS_SLOW;
+          gst_multi_fd_sink_remove_client_link (sink, clients);
+        }
+      }
+      CLIENTS_UNLOCK (sink);
+      return;
+    } else if (result < 0) {
       GST_WARNING_OBJECT (sink, "wait failed: %s (%d)", g_strerror (errno),
           errno);
       if (errno == EBADF) {
@@ -2838,8 +2888,14 @@ gst_multi_fd_sink_start (GstBaseSink * bsink)
   }
 
   this->running = TRUE;
+
+#if !GLIB_CHECK_VERSION (2, 31, 0)
   this->thread = g_thread_create ((GThreadFunc) gst_multi_fd_sink_thread,
       this, TRUE, NULL);
+#else
+  this->thread = g_thread_new ("multifdsink",
+      (GThreadFunc) gst_multi_fd_sink_thread, this);
+#endif
 
   GST_OBJECT_FLAG_SET (this, GST_MULTI_FD_SINK_OPEN);
 

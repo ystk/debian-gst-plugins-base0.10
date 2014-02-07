@@ -26,6 +26,7 @@
 #include <gst/base/gsttypefindhelper.h>
 #include <gst/gst.h>
 #include "tag.h"
+#include "id3v2.h"
 
 #include <string.h>
 
@@ -43,6 +44,25 @@
  * </refsect2>
  */
 
+#ifndef GST_DISABLE_GST_DEBUG
+#define GST_CAT_DEFAULT gst_tag_ensure_debug_category()
+
+static GstDebugCategory *
+gst_tag_ensure_debug_category (void)
+{
+  static gsize cat_gonce = 0;
+
+  if (g_once_init_enter (&cat_gonce)) {
+    GstDebugCategory *cat = NULL;
+
+    GST_DEBUG_CATEGORY_INIT (cat, "tag-tags", 0, "GstTag helper functions");
+
+    g_once_init_leave (&cat_gonce, (gsize) cat);
+  }
+
+  return (GstDebugCategory *) cat_gonce;
+}
+#endif /* GST_DISABLE_GST_DEBUG */
 
 static gpointer
 gst_tag_register_tags_internal (gpointer unused)
@@ -85,10 +105,103 @@ gst_tag_register_tags_internal (gpointer unused)
       "Musicbrainz discid for metadata retrieval (full)",
       gst_tag_merge_use_first);
 
+  /* photography tags */
+  gst_tag_register (GST_TAG_CAPTURING_SHUTTER_SPEED, GST_TAG_FLAG_META,
+      GST_TYPE_FRACTION, _("capturing shutter speed"),
+      _("Shutter speed used when capturing an image, in seconds"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_FOCAL_RATIO, GST_TAG_FLAG_META,
+      G_TYPE_DOUBLE, _("capturing focal ratio"),
+      _("Focal ratio (f-number) used when capturing the image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_FOCAL_LENGTH, GST_TAG_FLAG_META,
+      G_TYPE_DOUBLE, _("capturing focal length"),
+      _("Focal length of the lens used capturing the image, in mm"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_DIGITAL_ZOOM_RATIO, GST_TAG_FLAG_META,
+      G_TYPE_DOUBLE, _("capturing digital zoom ratio"),
+      _("Digital zoom ratio used when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_ISO_SPEED, GST_TAG_FLAG_META,
+      G_TYPE_INT, _("capturing iso speed"),
+      _("The ISO speed used when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_EXPOSURE_PROGRAM, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing exposure program"),
+      _("The exposure program used when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_EXPOSURE_MODE, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing exposure mode"),
+      _("The exposure mode used when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_EXPOSURE_COMPENSATION, GST_TAG_FLAG_META,
+      G_TYPE_DOUBLE, _("capturing exposure compensation"),
+      _("The exposure compensation used when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_SCENE_CAPTURE_TYPE, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing scene capture type"),
+      _("The scene capture mode used when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_GAIN_ADJUSTMENT, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing gain adjustment"),
+      _("The overall gain adjustment applied on an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_WHITE_BALANCE, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing white balance"),
+      _("The white balance mode set when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_CONTRAST, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing contrast"),
+      _("The direction of contrast processing applied "
+          "when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_SATURATION, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing saturation"),
+      _("The direction of saturation processing applied when "
+          "capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_SHARPNESS, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing sharpness"),
+      _("The direction of sharpness processing applied "
+          "when capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_FLASH_FIRED, GST_TAG_FLAG_META,
+      G_TYPE_BOOLEAN, _("capturing flash fired"),
+      _("If the flash fired while capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_FLASH_MODE, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing flash mode"),
+      _("The selected flash mode while capturing an image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_METERING_MODE, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing metering mode"),
+      _("The metering mode used while determining exposure for capturing an"
+          " image"), NULL);
+
+  gst_tag_register (GST_TAG_CAPTURING_SOURCE, GST_TAG_FLAG_META,
+      G_TYPE_STRING, _("capturing source"),
+      _("The source or type of device used for the capture"), NULL);
+
+  gst_tag_register (GST_TAG_IMAGE_HORIZONTAL_PPI, GST_TAG_FLAG_META,
+      G_TYPE_DOUBLE, _("image horizontal ppi"),
+      _("Media (image/video) intended horizontal pixel density in ppi"), NULL);
+
+  gst_tag_register (GST_TAG_IMAGE_VERTICAL_PPI, GST_TAG_FLAG_META,
+      G_TYPE_DOUBLE, _("image vertical ppi"),
+      _("Media (image/video) intended vertical pixel density in ppi"), NULL);
+
+  gst_tag_register (GST_TAG_ID3V2_FRAME, GST_TAG_FLAG_META,
+      GST_TYPE_BUFFER, _("ID3v2 frame"), _("unparsed id3v2 tag frame"),
+      gst_tag_merge_use_first);
+
   return NULL;
 }
 
-/* FIXME 0.11: rename this to gst_tag_init() or gst_tag_register_tags() */
+/* FIXME 0.11: rename this to gst_tag_init() or gst_tag_register_tags() or
+ * even better: make tags auto-register themselves, either by defining them
+ * to a wrapper func that does the initing, or by adding tag factories so
+ * that the core can load+register tags automatically when needed. */
+
 /**
  * gst_tag_register_musicbrainz_tags
  *
@@ -255,7 +368,7 @@ gst_tag_parse_extended_comment (const gchar * ext_comment, gchar ** key,
  * variables (whose names are specified in the NULL-terminated string array
  * @env_vars) containing a list of character encodings to try/use. If none
  * are specified, the current locale will be tried. If that also doesn't work,
- * ISO-8859-1 is assumed (which will almost always succeed).
+ * WINDOWS-1252/ISO-8859-1 is assumed (which will almost always succeed).
  *
  * Returns: a newly-allocated string in UTF-8 encoding, or NULL
  *
@@ -375,11 +488,28 @@ gst_tag_freeform_string_to_utf8 (const gchar * data, gint size,
     }
   }
 
-  /* Try ISO-8859-1 */
-  GST_LOG ("Trying to convert freeform string using ISO-8859-1 fallback");
-  utf8 = g_convert (data, size, "UTF-8", "ISO-8859-1", &bytes_read, NULL, NULL);
-  if (utf8 != NULL && bytes_read == size) {
-    goto beach;
+  /* Try Windows-1252 (which is a superset of ISO 8859-1 that uses a control
+   * character range in ISO 8859-1 for more printable characters) */
+  {
+    GError *err = NULL;
+
+    GST_LOG ("Trying to convert freeform string using Windows-1252/ISO-8859-1 "
+        "fallback");
+    utf8 = g_convert (data, size, "UTF-8", "WINDOWS-1252", &bytes_read, NULL,
+        &err);
+    if (err != NULL) {
+      /* fallback in case iconv implementation doesn't support windows-1252
+       * for some reason */
+      if (err->code == G_CONVERT_ERROR_NO_CONVERSION) {
+        g_free (utf8);
+        utf8 = g_convert (data, size, "UTF-8", "ISO-8859-1", &bytes_read,
+            NULL, NULL);
+      }
+      g_error_free (err);
+    }
+
+    if (utf8 != NULL && bytes_read == size)
+      goto beach;
   }
 
   g_free (utf8);

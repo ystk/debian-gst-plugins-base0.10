@@ -52,9 +52,11 @@
 #include "gstalsadeviceprobe.h"
 
 #include <gst/gst-i18n-plugin.h>
+#include "gst/glib-compat-private.h"
 
 #define DEFAULT_DEVICE		"default"
 #define DEFAULT_DEVICE_NAME	""
+#define DEFAULT_CARD_NAME	""
 #define SPDIF_PERIOD_SIZE 1536
 #define SPDIF_BUFFER_SIZE 15360
 
@@ -62,7 +64,9 @@ enum
 {
   PROP_0,
   PROP_DEVICE,
-  PROP_DEVICE_NAME
+  PROP_DEVICE_NAME,
+  PROP_CARD_NAME,
+  PROP_LAST
 };
 
 static void gst_alsasink_init_interfaces (GType type);
@@ -169,8 +173,8 @@ gst_alsasink_base_init (gpointer g_class)
       "Audio sink (ALSA)", "Sink/Audio",
       "Output to a sound card via ALSA", "Wim Taymans <wim@fluendo.com>");
 
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&alsasink_sink_factory));
+  gst_element_class_add_static_pad_template (element_class,
+      &alsasink_sink_factory);
 }
 
 static void
@@ -208,6 +212,11 @@ gst_alsasink_class_init (GstAlsaSinkClass * klass)
   g_object_class_install_property (gobject_class, PROP_DEVICE_NAME,
       g_param_spec_string ("device-name", "Device name",
           "Human-readable name of the sound device", DEFAULT_DEVICE_NAME,
+          G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class, PROP_CARD_NAME,
+      g_param_spec_string ("card-name", "Card name",
+          "Human-readable name of the sound card", DEFAULT_CARD_NAME,
           G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 }
 
@@ -250,6 +259,11 @@ gst_alsasink_get_property (GObject * object, guint prop_id,
       g_value_take_string (value,
           gst_alsa_find_device_name (GST_OBJECT_CAST (sink),
               sink->device, sink->handle, SND_PCM_STREAM_PLAYBACK));
+      break;
+    case PROP_CARD_NAME:
+      g_value_take_string (value,
+          gst_alsa_find_card_name (GST_OBJECT_CAST (sink),
+              sink->device, SND_PCM_STREAM_PLAYBACK));
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -319,7 +333,7 @@ static int
 set_hwparams (GstAlsaSink * alsa)
 {
   guint rrate;
-  gint err, dir;
+  gint err;
   snd_pcm_hw_params_t *params;
   guint period_time, buffer_time;
 
@@ -360,37 +374,37 @@ retry:
   rrate = alsa->rate;
   CHECK (snd_pcm_hw_params_set_rate_near (alsa->handle, params, &rrate, NULL),
       no_rate);
-  if (rrate != alsa->rate)
-    goto rate_match;
 
+#ifndef GST_DISABLE_GST_DEBUG
   /* get and dump some limits */
   {
     guint min, max;
 
-    snd_pcm_hw_params_get_buffer_time_min (params, &min, &dir);
-    snd_pcm_hw_params_get_buffer_time_max (params, &max, &dir);
+    snd_pcm_hw_params_get_buffer_time_min (params, &min, NULL);
+    snd_pcm_hw_params_get_buffer_time_max (params, &max, NULL);
 
     GST_DEBUG_OBJECT (alsa, "buffer time %u, min %u, max %u",
         alsa->buffer_time, min, max);
 
-    snd_pcm_hw_params_get_period_time_min (params, &min, &dir);
-    snd_pcm_hw_params_get_period_time_max (params, &max, &dir);
+    snd_pcm_hw_params_get_period_time_min (params, &min, NULL);
+    snd_pcm_hw_params_get_period_time_max (params, &max, NULL);
 
     GST_DEBUG_OBJECT (alsa, "period time %u, min %u, max %u",
         alsa->period_time, min, max);
 
-    snd_pcm_hw_params_get_periods_min (params, &min, &dir);
-    snd_pcm_hw_params_get_periods_max (params, &max, &dir);
+    snd_pcm_hw_params_get_periods_min (params, &min, NULL);
+    snd_pcm_hw_params_get_periods_max (params, &max, NULL);
 
     GST_DEBUG_OBJECT (alsa, "periods min %u, max %u", min, max);
   }
+#endif
 
   /* now try to configure the buffer time and period time, if one
    * of those fail, we fall back to the defaults and emit a warning. */
   if (buffer_time != -1 && !alsa->iec958) {
     /* set the buffer time */
     if ((err = snd_pcm_hw_params_set_buffer_time_near (alsa->handle, params,
-                &buffer_time, &dir)) < 0) {
+                &buffer_time, NULL)) < 0) {
       GST_ELEMENT_WARNING (alsa, RESOURCE, SETTINGS, (NULL),
           ("Unable to set buffer time %i for playback: %s",
               buffer_time, snd_strerror (err)));
@@ -403,7 +417,7 @@ retry:
   if (period_time != -1 && !alsa->iec958) {
     /* set the period time */
     if ((err = snd_pcm_hw_params_set_period_time_near (alsa->handle, params,
-                &period_time, &dir)) < 0) {
+                &period_time, NULL)) < 0) {
       GST_ELEMENT_WARNING (alsa, RESOURCE, SETTINGS, (NULL),
           ("Unable to set period time %i for playback: %s",
               period_time, snd_strerror (err)));
@@ -431,7 +445,7 @@ retry:
   /* now get the configured values */
   CHECK (snd_pcm_hw_params_get_buffer_size (params, &alsa->buffer_size),
       buffer_size);
-  CHECK (snd_pcm_hw_params_get_period_size (params, &alsa->period_size, &dir),
+  CHECK (snd_pcm_hw_params_get_period_size (params, &alsa->period_size, NULL),
       period_size);
 
   GST_DEBUG_OBJECT (alsa, "buffer size %lu, period size %lu", alsa->buffer_size,
@@ -488,13 +502,6 @@ no_rate:
         ("Rate %iHz not available for playback: %s",
             alsa->rate, snd_strerror (err)));
     return err;
-  }
-rate_match:
-  {
-    GST_ELEMENT_ERROR (alsa, RESOURCE, SETTINGS, (NULL),
-        ("Rate doesn't match (requested %iHz, get %iHz)", alsa->rate, err));
-    snd_pcm_hw_params_free (params);
-    return -EINVAL;
   }
 buffer_size:
   {

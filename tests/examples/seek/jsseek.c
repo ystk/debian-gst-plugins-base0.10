@@ -50,14 +50,6 @@
 GST_DEBUG_CATEGORY_STATIC (seek_debug);
 #define GST_CAT_DEFAULT (seek_debug)
 
-#if !GTK_CHECK_VERSION (2, 17, 7)
-static void
-gtk_widget_get_allocation (GtkWidget * w, GtkAllocation * a)
-{
-  *a = w->allocation;
-}
-#endif
-
 /* configuration */
 
 //#define SOURCE "filesrc"
@@ -1401,7 +1393,7 @@ set_update_fill (gboolean active)
   if (active) {
     if (fill_id == 0) {
       fill_id =
-          g_timeout_add (FILL_INTERVAL, (GtkFunction) update_fill, pipeline);
+          g_timeout_add (FILL_INTERVAL, (GSourceFunc) update_fill, pipeline);
     }
   } else {
     if (fill_id) {
@@ -1420,7 +1412,7 @@ set_update_scale (gboolean active)
   if (active) {
     if (update_id == 0) {
       update_id =
-          g_timeout_add (UPDATE_INTERVAL, (GtkFunction) update_scale, pipeline);
+          g_timeout_add (UPDATE_INTERVAL, (GSourceFunc) update_scale, pipeline);
     }
   } else {
     if (update_id) {
@@ -1567,6 +1559,7 @@ stop_cb (GtkButton * button, gpointer data)
 
     state = STOP_STATE;
     gtk_statusbar_push (GTK_STATUSBAR (statusbar), status_id, "Stopped");
+    gtk_widget_queue_draw (video_window);
 
     is_live = FALSE;
     buffering = FALSE;
@@ -1788,11 +1781,11 @@ clear_streams (GstElement * pipeline)
 
   /* remove previous info */
   for (i = 0; i < n_video; i++)
-    gtk_combo_box_remove_text (GTK_COMBO_BOX (video_combo), 0);
+    gtk_combo_box_text_remove (GTK_COMBO_BOX_TEXT (video_combo), 0);
   for (i = 0; i < n_audio; i++)
-    gtk_combo_box_remove_text (GTK_COMBO_BOX (audio_combo), 0);
+    gtk_combo_box_text_remove (GTK_COMBO_BOX_TEXT (audio_combo), 0);
   for (i = 0; i < n_text; i++)
-    gtk_combo_box_remove_text (GTK_COMBO_BOX (text_combo), 0);
+    gtk_combo_box_text_remove (GTK_COMBO_BOX_TEXT (text_combo), 0);
 
   n_audio = n_video = n_text = 0;
   gtk_widget_set_sensitive (video_combo, FALSE);
@@ -1833,7 +1826,7 @@ update_streams (GstPipeline * pipeline)
       }
       /* find good name for the label */
       name = g_strdup_printf ("video %d", i + 1);
-      gtk_combo_box_append_text (GTK_COMBO_BOX (video_combo), name);
+      gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (video_combo), name);
       g_free (name);
     }
     state = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (video_checkbox));
@@ -1850,7 +1843,7 @@ update_streams (GstPipeline * pipeline)
       }
       /* find good name for the label */
       name = g_strdup_printf ("audio %d", i + 1);
-      gtk_combo_box_append_text (GTK_COMBO_BOX (audio_combo), name);
+      gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (audio_combo), name);
       g_free (name);
     }
     state = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (audio_checkbox));
@@ -1879,7 +1872,7 @@ update_streams (GstPipeline * pipeline)
       if (name == NULL)
         name = g_strdup_printf ("text %d", i + 1);
 
-      gtk_combo_box_append_text (GTK_COMBO_BOX (text_combo), name);
+      gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (text_combo), name);
       g_free (name);
     }
     state = gtk_toggle_button_get_active (GTK_TOGGLE_BUTTON (text_checkbox));
@@ -1955,7 +1948,7 @@ init_visualization_features (void)
     name = gst_element_factory_get_longname (entry.factory);
 
     g_array_append_val (vis_entries, entry);
-    gtk_combo_box_append_text (GTK_COMBO_BOX (vis_combo), name);
+    gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (vis_combo), name);
   }
   gtk_combo_box_set_active (GTK_COMBO_BOX (vis_combo), 0);
 }
@@ -2105,6 +2098,10 @@ step_cb (GtkButton * button, gpointer data)
   event = gst_event_new_step (format, amount, rate, flush, FALSE);
 
   res = send_event (event);
+
+  if (!res) {
+    g_print ("Sending step event failed\n");
+  }
 }
 
 static void
@@ -2451,23 +2448,24 @@ bus_sync_handler (GstBus * bus, GstMessage * message, GstPipeline * data)
      * shouldn't be done from a non-GUI thread without explicit locking).  */
     g_assert (embed_xid != 0);
 
-    gst_x_overlay_set_xwindow_id (GST_X_OVERLAY (element), embed_xid);
+    gst_x_overlay_set_window_handle (GST_X_OVERLAY (element), embed_xid);
   }
   return GST_BUS_PASS;
 }
 #endif
 
 static gboolean
-handle_expose_cb (GtkWidget * widget, GdkEventExpose * event, gpointer data)
+draw_cb (GtkWidget * widget, cairo_t * cr, gpointer data)
 {
   if (state < GST_STATE_PAUSED) {
-    GtkAllocation allocation;
-    GdkWindow *window = gtk_widget_get_window (widget);
-    GtkStyle *style = gtk_widget_get_style (widget);
+    int width, height;
 
-    gtk_widget_get_allocation (widget, &allocation);
-    gdk_draw_rectangle (window, style->black_gc, TRUE, 0, 0,
-        allocation.width, allocation.height);
+    width = gtk_widget_get_allocated_width (widget);
+    height = gtk_widget_get_allocated_height (widget);
+    cairo_set_source_rgb (cr, 0, 0, 0);
+    cairo_rectangle (cr, 0, 0, width, height);
+    cairo_fill (cr);
+    return TRUE;
   }
   return FALSE;
 }
@@ -2475,24 +2473,16 @@ handle_expose_cb (GtkWidget * widget, GdkEventExpose * event, gpointer data)
 static void
 realize_cb (GtkWidget * widget, gpointer data)
 {
-#if GTK_CHECK_VERSION(2,18,0)
-  {
-    GdkWindow *window = gtk_widget_get_window (widget);
+  GdkWindow *window = gtk_widget_get_window (widget);
 
-    /* This is here just for pedagogical purposes, GDK_WINDOW_XID will call it
-     * as well */
-    if (!gdk_window_ensure_native (window))
-      g_error ("Couldn't create native window needed for GstXOverlay!");
-  }
-#endif
+  /* This is here just for pedagogical purposes, GDK_WINDOW_XID will call it
+   * as well */
+  if (!gdk_window_ensure_native (window))
+    g_error ("Couldn't create native window needed for GstXOverlay!");
 
 #ifdef HAVE_X
-  {
-    GdkWindow *window = gtk_widget_get_window (video_window);
-
-    embed_xid = GDK_WINDOW_XID (window);
-    g_print ("Window realize: video window XID = %lu\n", embed_xid);
-  }
+  embed_xid = GDK_WINDOW_XID (window);
+  g_print ("Window realize: video window XID = %lu\n", embed_xid);
 #endif
 }
 
@@ -2641,6 +2631,8 @@ read_joystick (GIOChannel * source, GIOCondition condition, gpointer user_data)
     g_print ("error reading joystick, read %u bytes of %u\n",
         (guint) bytes_read, (guint) sizeof (struct js_event));
     return TRUE;
+  } else if (result != G_IO_STATUS_NORMAL) {
+    g_print ("reading from joystick returned status %d", result);
   }
 
   switch (js->type & ~JS_EVENT_INIT) {
@@ -2680,8 +2672,10 @@ main (int argc, char **argv)
   GOptionContext *ctx;
   GError *err = NULL;
 
+#if !GLIB_CHECK_VERSION (2, 31, 0)
   if (!g_thread_supported ())
     g_thread_init (NULL);
+#endif
 
   ctx = g_option_context_new ("- test seeking in gsteamer");
   g_option_context_add_main_entries (ctx, options, NULL);
@@ -2738,8 +2732,7 @@ main (int argc, char **argv)
   /* initialize gui elements ... */
   window = gtk_window_new (GTK_WINDOW_TOPLEVEL);
   video_window = gtk_drawing_area_new ();
-  g_signal_connect (video_window, "expose-event",
-      G_CALLBACK (handle_expose_cb), NULL);
+  g_signal_connect (video_window, "draw", G_CALLBACK (draw_cb), NULL);
   g_signal_connect (video_window, "realize", G_CALLBACK (realize_cb), NULL);
   gtk_widget_set_double_buffered (video_window, FALSE);
 
@@ -2793,9 +2786,11 @@ main (int argc, char **argv)
     step = gtk_expander_new ("step options");
     hbox = gtk_hbox_new (FALSE, 0);
 
-    format_combo = gtk_combo_box_new_text ();
-    gtk_combo_box_append_text (GTK_COMBO_BOX (format_combo), "frames");
-    gtk_combo_box_append_text (GTK_COMBO_BOX (format_combo), "time (ms)");
+    format_combo = gtk_combo_box_text_new ();
+    gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (format_combo),
+        "frames");
+    gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (format_combo),
+        "time (ms)");
     gtk_combo_box_set_active (GTK_COMBO_BOX (format_combo), 0);
     gtk_box_pack_start (GTK_BOX (hbox), format_combo, FALSE, FALSE, 2);
 
@@ -2829,8 +2824,6 @@ main (int argc, char **argv)
     shuttle_hscale = gtk_hscale_new (shuttle_adjustment);
     gtk_scale_set_digits (GTK_SCALE (shuttle_hscale), 2);
     gtk_scale_set_value_pos (GTK_SCALE (shuttle_hscale), GTK_POS_TOP);
-    gtk_range_set_update_policy (GTK_RANGE (shuttle_hscale),
-        GTK_UPDATE_CONTINUOUS);
     g_signal_connect (shuttle_hscale, "value_changed",
         G_CALLBACK (shuttle_value_changed), pipeline);
     g_signal_connect (shuttle_hscale, "format_value",
@@ -2849,7 +2842,6 @@ main (int argc, char **argv)
   gtk_scale_set_value_pos (GTK_SCALE (hscale), GTK_POS_RIGHT);
   gtk_range_set_show_fill_level (GTK_RANGE (hscale), TRUE);
   gtk_range_set_fill_level (GTK_RANGE (hscale), 100.0);
-  gtk_range_set_update_policy (GTK_RANGE (hscale), GTK_UPDATE_CONTINUOUS);
 
   g_signal_connect (hscale, "button_press_event", G_CALLBACK (start_seek),
       pipeline);
@@ -2861,9 +2853,9 @@ main (int argc, char **argv)
   if (pipeline_type == 16) {
     /* the playbin2 panel controls for the video/audio/subtitle tracks */
     panel = gtk_hbox_new (FALSE, 0);
-    video_combo = gtk_combo_box_new_text ();
-    audio_combo = gtk_combo_box_new_text ();
-    text_combo = gtk_combo_box_new_text ();
+    video_combo = gtk_combo_box_text_new ();
+    audio_combo = gtk_combo_box_text_new ();
+    text_combo = gtk_combo_box_text_new ();
     gtk_widget_set_sensitive (video_combo, FALSE);
     gtk_widget_set_sensitive (audio_combo, FALSE);
     gtk_widget_set_sensitive (text_combo, FALSE);
@@ -2927,7 +2919,7 @@ main (int argc, char **argv)
         "save a screenshot .png in the current directory");
     g_signal_connect (G_OBJECT (shot_button), "clicked", G_CALLBACK (shot_cb),
         pipeline);
-    vis_combo = gtk_combo_box_new_text ();
+    vis_combo = gtk_combo_box_text_new ();
     g_signal_connect (G_OBJECT (vis_combo), "changed",
         G_CALLBACK (vis_combo_cb), pipeline);
     gtk_widget_set_sensitive (vis_combo, FALSE);
@@ -3021,6 +3013,7 @@ main (int argc, char **argv)
 
   {
     GIOChannel *js_watch = g_io_channel_unix_new (js_fd);
+    g_io_channel_set_encoding (js_watch, NULL, NULL);
     g_io_add_watch (js_watch, G_IO_IN, read_joystick, NULL);
   }
 

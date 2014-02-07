@@ -37,7 +37,7 @@ window_closed (GtkWidget * widget, GdkEvent * event, gpointer user_data)
 {
   GstElement *pipeline = user_data;
 
-  gtk_widget_hide_all (widget);
+  gtk_widget_hide (widget);
   gst_element_set_state (pipeline, GST_STATE_NULL);
   gtk_main_quit ();
 }
@@ -98,8 +98,10 @@ main (int argc, char **argv)
   gulong embed_xid;
   GstStateChangeReturn sret;
 
+#if !GLIB_CHECK_VERSION (2, 31, 0)
   if (!g_thread_supported ())
     g_thread_init (NULL);
+#endif
 
   gst_init (&argc, &argv);
   gtk_init (&argc, &argv);
@@ -134,7 +136,7 @@ main (int argc, char **argv)
 
   video_window_xwindow = gtk_widget_get_window (video_window);
   embed_xid = GDK_WINDOW_XID (video_window_xwindow);
-  gst_x_overlay_set_xwindow_id (GST_X_OVERLAY (sink), embed_xid);
+  gst_x_overlay_set_window_handle (GST_X_OVERLAY (sink), embed_xid);
 
   /* run the pipeline */
 

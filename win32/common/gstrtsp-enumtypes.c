@@ -1,5 +1,5 @@
 
-/* Generated data (by glib-mkenums) */
+
 
 #include "gstrtsp-enumtypes.h"
 
@@ -279,6 +279,8 @@ gst_rtsp_header_field_get_type (void)
           "x-server-ip-address"},
       {GST_RTSP_HDR_X_SESSIONCOOKIE, "GST_RTSP_HDR_X_SESSIONCOOKIE",
           "x-sessioncookie"},
+      {GST_RTSP_HDR_RTCP_INTERVAL, "GST_RTSP_HDR_RTCP_INTERVAL",
+          "rtcp-interval"},
       {GST_RTSP_HDR_LAST, "GST_RTSP_HDR_LAST", "last"},
       {0, NULL, NULL}
     };
@@ -387,5 +389,3 @@ gst_rtsp_status_code_get_type (void)
   }
   return g_define_type_id__volatile;
 }
-
-/* Generated data ends here */

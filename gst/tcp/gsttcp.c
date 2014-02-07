@@ -116,7 +116,7 @@ gst_tcp_socket_write (int socket, const void *buf, size_t count)
     bytes_written += wrote;
   }
 
-  GST_LOG ("wrote %" G_GSIZE_FORMAT " bytes succesfully", bytes_written);
+  GST_LOG ("wrote %" G_GSIZE_FORMAT " bytes successfully", bytes_written);
   return bytes_written;
 }
 
@@ -241,7 +241,7 @@ gst_tcp_read_buffer (GstElement * this, int socket, GstPoll * fdset,
   }
 
   /* ask how much is available for reading on the socket */
-  if ((ret = ioctl (socket, FIONREAD, &readsize)) < 0)
+  if (ioctl (socket, FIONREAD, &readsize) < 0)
     goto ioctl_error;
 
   if (readsize == 0)

@@ -43,11 +43,11 @@
 
 #include "gstringbuffer.h"
 
+#include "gst/glib-compat-private.h"
+
 GST_DEBUG_CATEGORY_STATIC (gst_ring_buffer_debug);
 #define GST_CAT_DEFAULT gst_ring_buffer_debug
 
-static void gst_ring_buffer_class_init (GstRingBufferClass * klass);
-static void gst_ring_buffer_init (GstRingBuffer * ringbuffer);
 static void gst_ring_buffer_dispose (GObject * object);
 static void gst_ring_buffer_finalize (GObject * object);
 
@@ -56,36 +56,8 @@ static void default_clear_all (GstRingBuffer * buf);
 static guint default_commit (GstRingBuffer * buf, guint64 * sample,
     guchar * data, gint in_samples, gint out_samples, gint * accum);
 
-static GstObjectClass *parent_class = NULL;
-
 /* ringbuffer abstract base class */
-GType
-gst_ring_buffer_get_type (void)
-{
-  static GType ringbuffer_type = 0;
-
-  if (G_UNLIKELY (!ringbuffer_type)) {
-    static const GTypeInfo ringbuffer_info = {
-      sizeof (GstRingBufferClass),
-      NULL,
-      NULL,
-      (GClassInitFunc) gst_ring_buffer_class_init,
-      NULL,
-      NULL,
-      sizeof (GstRingBuffer),
-      0,
-      (GInstanceInitFunc) gst_ring_buffer_init,
-      NULL
-    };
-
-    ringbuffer_type = g_type_register_static (GST_TYPE_OBJECT, "GstRingBuffer",
-        &ringbuffer_info, G_TYPE_FLAG_ABSTRACT);
-
-    GST_DEBUG_CATEGORY_INIT (gst_ring_buffer_debug, "ringbuffer", 0,
-        "ringbuffer class");
-  }
-  return ringbuffer_type;
-}
+G_DEFINE_ABSTRACT_TYPE (GstRingBuffer, gst_ring_buffer, GST_TYPE_OBJECT);
 
 static void
 gst_ring_buffer_class_init (GstRingBufferClass * klass)
@@ -96,7 +68,8 @@ gst_ring_buffer_class_init (GstRingBufferClass * klass)
   gobject_class = (GObjectClass *) klass;
   gstringbuffer_class = (GstRingBufferClass *) klass;
 
-  parent_class = g_type_class_peek_parent (klass);
+  GST_DEBUG_CATEGORY_INIT (gst_ring_buffer_debug, "ringbuffer", 0,
+      "ringbuffer class");
 
   gobject_class->dispose = gst_ring_buffer_dispose;
   gobject_class->finalize = gst_ring_buffer_finalize;
@@ -124,7 +97,8 @@ gst_ring_buffer_dispose (GObject * object)
 
   gst_caps_replace (&ringbuffer->spec.caps, NULL);
 
-  G_OBJECT_CLASS (parent_class)->dispose (G_OBJECT (ringbuffer));
+  G_OBJECT_CLASS (gst_ring_buffer_parent_class)->dispose (G_OBJECT
+      (ringbuffer));
 }
 
 static void
@@ -135,7 +109,8 @@ gst_ring_buffer_finalize (GObject * object)
   g_cond_free (ringbuffer->cond);
   g_free (ringbuffer->empty_seg);
 
-  G_OBJECT_CLASS (parent_class)->finalize (G_OBJECT (ringbuffer));
+  G_OBJECT_CLASS (gst_ring_buffer_parent_class)->finalize (G_OBJECT
+      (ringbuffer));
 }
 
 typedef struct
@@ -354,7 +329,7 @@ gst_ring_buffer_parse_caps (GstRingBufferSpec * spec, GstCaps * caps)
   /* we have to differentiate between int and float formats */
   mimetype = gst_structure_get_name (structure);
 
-  if (!strncmp (mimetype, "audio/x-raw-int", 15)) {
+  if (g_str_equal (mimetype, "audio/x-raw-int")) {
     gint endianness;
     const FormatDef *def;
     gint j, bytes;
@@ -394,7 +369,7 @@ gst_ring_buffer_parse_caps (GstRingBufferSpec * spec, GstCaps * caps)
         spec->silence_sample[i * bytes + j] = def->silence[j];
       }
     }
-  } else if (!strncmp (mimetype, "audio/x-raw-float", 17)) {
+  } else if (g_str_equal (mimetype, "audio/x-raw-float")) {
 
     spec->type = GST_BUFTYPE_FLOAT;
 
@@ -419,7 +394,7 @@ gst_ring_buffer_parse_caps (GstRingBufferSpec * spec, GstCaps * caps)
     }
     /* float silence is all zeros.. */
     memset (spec->silence_sample, 0, 32);
-  } else if (!strncmp (mimetype, "audio/x-alaw", 12)) {
+  } else if (g_str_equal (mimetype, "audio/x-alaw")) {
     /* extract the needed information from the cap */
     if (!(gst_structure_get_int (structure, "rate", &spec->rate) &&
             gst_structure_get_int (structure, "channels", &spec->channels)))
@@ -431,7 +406,7 @@ gst_ring_buffer_parse_caps (GstRingBufferSpec * spec, GstCaps * caps)
     spec->depth = 8;
     for (i = 0; i < spec->channels; i++)
       spec->silence_sample[i] = 0xd5;
-  } else if (!strncmp (mimetype, "audio/x-mulaw", 13)) {
+  } else if (g_str_equal (mimetype, "audio/x-mulaw")) {
     /* extract the needed information from the cap */
     if (!(gst_structure_get_int (structure, "rate", &spec->rate) &&
             gst_structure_get_int (structure, "channels", &spec->channels)))
@@ -443,7 +418,7 @@ gst_ring_buffer_parse_caps (GstRingBufferSpec * spec, GstCaps * caps)
     spec->depth = 8;
     for (i = 0; i < spec->channels; i++)
       spec->silence_sample[i] = 0xff;
-  } else if (!strncmp (mimetype, "audio/x-iec958", 14)) {
+  } else if (g_str_equal (mimetype, "audio/x-iec958")) {
     /* extract the needed information from the cap */
     if (!(gst_structure_get_int (structure, "rate", &spec->rate)))
       goto parse_error;
@@ -453,13 +428,46 @@ gst_ring_buffer_parse_caps (GstRingBufferSpec * spec, GstCaps * caps)
     spec->width = 16;
     spec->depth = 16;
     spec->channels = 2;
-  } else if (!strncmp (mimetype, "audio/x-ac3", 11)) {
+  } else if (g_str_equal (mimetype, "audio/x-ac3")) {
     /* extract the needed information from the cap */
     if (!(gst_structure_get_int (structure, "rate", &spec->rate)))
       goto parse_error;
 
     spec->type = GST_BUFTYPE_AC3;
     spec->format = GST_AC3;
+    spec->width = 16;
+    spec->depth = 16;
+    spec->channels = 2;
+  } else if (g_str_equal (mimetype, "audio/x-eac3")) {
+    /* extract the needed information from the cap */
+    if (!(gst_structure_get_int (structure, "rate", &spec->rate)))
+      goto parse_error;
+
+    spec->type = GST_BUFTYPE_EAC3;
+    spec->format = GST_EAC3;
+    spec->width = 64;
+    spec->depth = 64;
+    spec->channels = 2;
+  } else if (g_str_equal (mimetype, "audio/x-dts")) {
+    /* extract the needed information from the cap */
+    if (!(gst_structure_get_int (structure, "rate", &spec->rate)))
+      goto parse_error;
+
+    spec->type = GST_BUFTYPE_DTS;
+    spec->format = GST_DTS;
+    spec->width = 16;
+    spec->depth = 16;
+    spec->channels = 2;
+  } else if (g_str_equal (mimetype, "audio/mpeg") &&
+      gst_structure_get_int (structure, "mpegaudioversion", &i) &&
+      (i == 1 || i == 2)) {
+    /* Now we know this is MPEG-1 or MPEG-2 (non AAC) */
+    /* extract the needed information from the cap */
+    if (!(gst_structure_get_int (structure, "rate", &spec->rate)))
+      goto parse_error;
+
+    spec->type = GST_BUFTYPE_MPEG;
+    spec->format = GST_MPEG;
     spec->width = 16;
     spec->depth = 16;
     spec->channels = 2;
@@ -793,7 +801,7 @@ gst_ring_buffer_acquire (GstRingBuffer * buf, GstRingBufferSpec * spec)
 
   g_return_val_if_fail (GST_IS_RING_BUFFER (buf), FALSE);
 
-  GST_DEBUG_OBJECT (buf, "acquiring device");
+  GST_DEBUG_OBJECT (buf, "acquiring device %p", buf);
 
   GST_OBJECT_LOCK (buf);
   if (G_UNLIKELY (!buf->open))
@@ -864,7 +872,8 @@ acquire_failed:
 invalid_bps:
   {
     g_warning
-        ("invalid bytes_per_sample from acquire ringbuffer, fix the element");
+        ("invalid bytes_per_sample from acquire ringbuffer %p, fix the element",
+        buf);
     buf->acquired = FALSE;
     res = FALSE;
     goto done;
@@ -1111,6 +1120,9 @@ gst_ring_buffer_start (GstRingBuffer * buf)
   if (G_UNLIKELY (!buf->acquired))
     goto not_acquired;
 
+  if (G_UNLIKELY (g_atomic_int_get (&buf->abidata.ABI.may_start) == FALSE))
+    goto may_not_start;
+
   /* if stopped, set to started */
   res = g_atomic_int_compare_and_exchange (&buf->state,
       GST_RING_BUFFER_STATE_STOPPED, GST_RING_BUFFER_STATE_STARTED);
@@ -1160,6 +1172,12 @@ flushing:
 not_acquired:
   {
     GST_DEBUG_OBJECT (buf, "we are not acquired");
+    GST_OBJECT_UNLOCK (buf);
+    return FALSE;
+  }
+may_not_start:
+  {
+    GST_DEBUG_OBJECT (buf, "we may not start");
     GST_OBJECT_UNLOCK (buf);
     return FALSE;
   }
@@ -1755,7 +1773,7 @@ not_started:
  *
  * Commit @in_samples samples pointed to by @data to the ringbuffer @buf. 
  *
- * @in_samples and @out_samples define the rate conversion to perform on the the
+ * @in_samples and @out_samples define the rate conversion to perform on the
  * samples in @data. For negative rates, @out_samples must be negative and
  * @in_samples positive.
  *

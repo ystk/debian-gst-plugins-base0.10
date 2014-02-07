@@ -4,7 +4,7 @@
 %define gst_minver  0.10.0
 
 Name: 		%{gstreamer}-plugins-base
-Version: 	0.10.30
+Version: 	0.10.36
 Release: 	1.gst
 Summary: 	GStreamer streaming media framework plug-ins
 
@@ -20,8 +20,8 @@ BuildRequires: 	  %{gstreamer}-devel >= %{gst_minver}
 
 BuildRequires:  gcc-c++
 BuildRequires:  gtk-doc >= 1.3
-BuildRequires:  liboil-devel >= 0.3.14 
-Requires:       liboil => 0.3.14 
+BuildRequires:  orc-devel
+Requires:       orc
 
 Requires:      gnome-vfs2 > 1.9.4.00
 BuildRequires: gnome-vfs2-devel > 1.9.4.00
@@ -55,7 +55,7 @@ plug-ins.
 export DOCS_ARE_INCOMPLETE_PLEASE_FIXME=0
 %build
 %configure \
-  --enable-gtk-doc --enable-introspection=no
+  --enable-gtk-doc --enable-introspection=yes
 
 make %{?_smp_mflags}
                                                                                 
@@ -81,6 +81,7 @@ rm -rf $RPM_BUILD_ROOT
 
 # helper programs
 %{_bindir}/gst-visualise-%{majorminor}
+%{_bindir}/gst-discoverer-%{majorminor}
 %{_mandir}/man1/gst-visualise-%{majorminor}*
 
 # libraries
@@ -113,11 +114,11 @@ rm -rf $RPM_BUILD_ROOT
 %{_libdir}/gstreamer-%{majorminor}/libgstvideorate.so
 %{_libdir}/gstreamer-%{majorminor}/libgstvideoscale.so
 %{_libdir}/gstreamer-%{majorminor}/libgsttcp.so
-%{_libdir}/gstreamer-%{majorminor}/libgstvideo4linux.so
 %{_libdir}/gstreamer-%{majorminor}/libgstaudioresample.so
 %{_libdir}/gstreamer-%{majorminor}/libgstaudiotestsrc.so
 %{_libdir}/gstreamer-%{majorminor}/libgstgdp.so
 %{_libdir}/gstreamer-%{majorminor}/libgstapp.so
+%{_libdir}/gstreamer-%{majorminor}/libgstencodebin.so
 
 # Here are packages not in the base plugins package but not dependant
 # on an external lib
@@ -215,6 +216,17 @@ GStreamer Plugins Base library development and header files.
 %{_includedir}/gstreamer-%{majorminor}/gst/audio/audio-enumtypes.h
 %{_includedir}/gstreamer-%{majorminor}/gst/video/video-enumtypes.h
 %{_includedir}/gstreamer-%{majorminor}/gst/interfaces/streamvolume.h
+%{_includedir}/gstreamer-%{majorminor}/gst/pbutils/codec-utils.h
+%{_includedir}/gstreamer-%{majorminor}/gst/pbutils/encoding-profile.h
+%{_includedir}/gstreamer-%{majorminor}/gst/pbutils/encoding-target.h
+%{_includedir}/gstreamer-%{majorminor}/gst/pbutils/gstdiscoverer.h
+%{_includedir}/gstreamer-%{majorminor}/gst/pbutils/gstpluginsbaseversion.h
+%{_includedir}/gstreamer-%{majorminor}/gst/tag/xmpwriter.h
+%{_includedir}/gstreamer-%{majorminor}/gst/audio/gstaudioiec61937.h
+%{_includedir}/gstreamer-%{majorminor}/gst/audio/gstaudiodecoder.h
+%{_includedir}/gstreamer-%{majorminor}/gst/audio/gstaudioencoder.h
+%{_includedir}/gstreamer-%{majorminor}/gst/tag/gsttagmux.h
+%{_includedir}/gstreamer-%{majorminor}/gst/video/video-overlay-composition.h
 
 %{_libdir}/libgstfft-%{majorminor}.so
 %{_libdir}/libgstrtsp-%{majorminor}.so
@@ -247,9 +259,35 @@ GStreamer Plugins Base library development and header files.
 %{_libdir}/pkgconfig/gstreamer-video-%{majorminor}.pc
 %{_libdir}/pkgconfig/gstreamer-app-%{majorminor}.pc
 
+%{_libdir}/girepository-1.0/GstApp-0.10.typelib
+%{_libdir}/girepository-1.0/GstAudio-0.10.typelib
+%{_libdir}/girepository-1.0/GstFft-0.10.typelib
+%{_libdir}/girepository-1.0/GstInterfaces-0.10.typelib
+%{_libdir}/girepository-1.0/GstNetbuffer-0.10.typelib
+%{_libdir}/girepository-1.0/GstPbutils-0.10.typelib
+%{_libdir}/girepository-1.0/GstRiff-0.10.typelib
+%{_libdir}/girepository-1.0/GstRtp-0.10.typelib
+%{_libdir}/girepository-1.0/GstRtsp-0.10.typelib
+%{_libdir}/girepository-1.0/GstSdp-0.10.typelib
+%{_libdir}/girepository-1.0/GstTag-0.10.typelib
+%{_libdir}/girepository-1.0/GstVideo-0.10.typelib
+%{_datadir}/gir-1.0/GstApp-0.10.gir
+%{_datadir}/gir-1.0/GstAudio-0.10.gir
+%{_datadir}/gir-1.0/GstFft-0.10.gir
+%{_datadir}/gir-1.0/GstInterfaces-0.10.gir
+%{_datadir}/gir-1.0/GstNetbuffer-0.10.gir
+%{_datadir}/gir-1.0/GstPbutils-0.10.gir
+%{_datadir}/gir-1.0/GstRiff-0.10.gir
+%{_datadir}/gir-1.0/GstRtp-0.10.gir
+%{_datadir}/gir-1.0/GstRtsp-0.10.gir
+%{_datadir}/gir-1.0/GstSdp-0.10.gir
+%{_datadir}/gir-1.0/GstTag-0.10.gir
+%{_datadir}/gir-1.0/GstVideo-0.10.gir
+
 # gtk-doc documentation
 %doc %{_datadir}/gtk-doc/html/gst-plugins-base-libs-%{majorminor}
 %doc %{_datadir}/gtk-doc/html/gst-plugins-base-plugins-%{majorminor}
+%doc %{_datadir}/gst-plugins-base/license-translations.dict
 
 %changelog
 * Fri Dec 15 2006 Thomas Vander Stichele <thomas at apestaart dot org>

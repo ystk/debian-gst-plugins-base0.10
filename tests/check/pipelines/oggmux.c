@@ -46,10 +46,10 @@ typedef struct
   ChainCodec codec;
 } ChainState;
 
+#if (defined (HAVE_THEORA) || defined (HAVE_VORBIS))
 static ogg_sync_state oggsync;
 static GHashTable *eos_chain_states;
 static gulong probe_id;
-
 
 static ChainCodec
 get_page_codec (ogg_page * page)
@@ -75,15 +75,6 @@ get_page_codec (ogg_page * page)
   ogg_stream_clear (&state);
 
   return codec;
-}
-
-static gboolean
-check_chain_final_state (gpointer key, ChainState * state, gpointer data)
-{
-  fail_unless (state->eos, "missing EOS flag on chain %u", state->serialno);
-
-  /* return TRUE to empty the chain table */
-  return TRUE;
 }
 
 static void
@@ -157,6 +148,14 @@ is_video (gpointer key, ChainState * state, gpointer data)
     *((gboolean *) data) = TRUE;
 }
 
+static gboolean
+check_chain_final_state (gpointer key, ChainState * state, gpointer data)
+{
+  fail_unless (state->eos, "missing EOS flag on chain %u", state->serialno);
+
+  /* return TRUE to empty the chain table */
+  return TRUE;
+}
 
 static gboolean
 eos_buffer_probe (GstPad * pad, GstBuffer * buffer, gpointer unused)
@@ -259,6 +258,7 @@ test_pipeline (const char *pipeline)
   GError *error = NULL;
   GMainLoop *loop;
   GstPadLinkReturn linkret;
+  guint bus_watch = 0;
 
   bin = gst_parse_launch (pipeline, &error);
   fail_unless (bin != NULL, "Error parsing pipeline: %s",
@@ -281,7 +281,7 @@ test_pipeline (const char *pipeline)
   /* run until we receive EOS */
   loop = g_main_loop_new (NULL, FALSE);
   bus = gst_element_get_bus (bin);
-  gst_bus_add_watch (bus, (GstBusFunc) eos_watch, loop);
+  bus_watch = gst_bus_add_watch (bus, (GstBusFunc) eos_watch, loop);
   gst_object_unref (bus);
 
   start_pipeline (bin, pad);
@@ -306,9 +306,11 @@ test_pipeline (const char *pipeline)
 
   /* clean up */
   g_main_loop_unref (loop);
+  g_source_remove (bus_watch);
   gst_object_unref (pad);
   gst_object_unref (bin);
 }
+#endif
 
 #ifdef HAVE_VORBIS
 GST_START_TEST (test_vorbis)

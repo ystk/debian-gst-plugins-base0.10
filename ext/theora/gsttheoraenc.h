@@ -21,6 +21,7 @@
 #define __GST_THEORAENC_H__
 
 #include <gst/gst.h>
+#include <gst/base/gstadapter.h>
 #include <theora/theoraenc.h>
 
 G_BEGIN_DECLS
@@ -56,6 +57,20 @@ typedef enum
 GstTheoraEncBorderMode;
 
 /**
+ * GstTheoraEncMultipassMode:
+ * @MULTIPASS_MODE_SINGLE_PASS: Single pass encoding
+ * @MULTIPASS_MODE_FIRST_PASS: First pass of two pass encoding
+ * @MULTIPASS_MODE_SECOND_PASS: Second pass of two pass encoding
+ *
+ */
+typedef enum
+{
+  MULTIPASS_MODE_SINGLE_PASS,
+  MULTIPASS_MODE_FIRST_PASS,
+  MULTIPASS_MODE_SECOND_PASS
+} GstTheoraEncMultipassMode;
+
+/**
  * GstTheoraEnc:
  *
  * Opaque data structure.
@@ -77,7 +92,9 @@ struct _GstTheoraEnc
   gboolean initialised;
 
   gint video_bitrate;           /* bitrate target for Theora video */
+  gboolean bitrate_changed;
   gint video_quality;           /* Theora quality selector 0 = low, 63 = high */
+  gboolean quality_changed;
   gboolean keyframe_auto;
   gint keyframe_freq;
   gint keyframe_force;
@@ -85,6 +102,7 @@ struct _GstTheoraEnc
   gint info_width, info_height;
   gint width, height;
   gint fps_n, fps_d;
+  gint par_n, par_d;
   GstClockTime next_ts;
 
   GstClockTime expected_ts;
@@ -103,6 +121,11 @@ struct _GstTheoraEnc
   gboolean cap_overflow;
   gboolean cap_underflow;
   int rate_buffer;
+
+  GstTheoraEncMultipassMode multipass_mode;
+  GIOChannel *multipass_cache_fd;
+  GstAdapter *multipass_cache_adapter;
+  gchar *multipass_cache_file;
 };
 
 struct _GstTheoraEncClass

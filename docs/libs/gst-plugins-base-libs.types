@@ -3,6 +3,10 @@
 
 #include <gst/audio/gstaudioclock.h>
 gst_audio_clock_get_type
+#include <gst/audio/gstaudiodecoder.h>
+gst_audio_decoder_get_type
+#include <gst/audio/gstaudioencoder.h>
+gst_audio_encoder_get_type
 #include <gst/audio/gstaudiofilter.h>
 gst_audio_filter_get_type
 #include <gst/audio/gstaudiosink.h>
@@ -56,4 +60,17 @@ gst_base_rtp_audio_payload_get_type
 gst_video_filter_get_type
 #include <gst/video/gstvideosink.h>
 gst_video_sink_get_type
+
+#include <gst/pbutils/pbutils.h>
+gst_discoverer_get_type
+
+#include <gst/pbutils/encoding-profile.h>
+#include <gst/pbutils/encoding-target.h>
+gst_encoding_profile_get_type
+gst_encoding_video_profile_get_type
+gst_encoding_video_profile_get_type
+gst_encoding_audio_profile_get_type
+gst_encoding_container_profile_get_type
+gst_encoding_target_get_type
+
 

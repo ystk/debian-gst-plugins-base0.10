@@ -20,6 +20,9 @@
  * Boston, MA 02111-1307, USA.
  */
 
+#include <gst/video/video.h>
+#include <gst/base/gstbasesink.h>
+
 #include <gst/check/gstcheck.h>
 #include <string.h>
 
@@ -65,6 +68,24 @@ on_sink_handoff (GstElement * element, GstBuffer * buffer, GstPad * pad,
   *n_buffers = *n_buffers + 1;
 }
 
+static gboolean
+caps_are_64bpp (const GstCaps * caps)
+{
+  GstVideoFormat fmt;
+  GstCaps *fmt_caps;
+
+  /* need fixed caps for _parse_caps */
+  fmt_caps = gst_caps_copy (caps);
+  gst_structure_remove_field (gst_caps_get_structure (fmt_caps, 0), "width");
+  gst_structure_remove_field (gst_caps_get_structure (fmt_caps, 0), "height");
+  gst_structure_remove_field (gst_caps_get_structure (fmt_caps, 0),
+      "framerate");
+
+  fail_unless (gst_video_format_parse_caps (fmt_caps, &fmt, NULL, NULL));
+  gst_caps_unref (fmt_caps);
+  return (fmt == GST_VIDEO_FORMAT_ARGB64 || fmt == GST_VIDEO_FORMAT_AYUV64);
+}
+
 static void
 run_test (const GstCaps * caps, gint src_width, gint src_height,
     gint dest_width, gint dest_height, gint method,
@@ -78,6 +99,10 @@ run_test (const GstCaps * caps, gint src_width, gint src_height,
   GstBus *bus;
   GstCaps *copy;
   guint n_buffers = 0;
+
+  /* skip formats that ffmpegcolorspace can't handle */
+  if (caps_are_64bpp (caps))
+    return;
 
   pipeline = gst_element_factory_make ("pipeline", "pipeline");
   fail_unless (pipeline != NULL);
@@ -195,6 +220,10 @@ GST_START_TEST (test_passthrough)
     GstCaps *caps = *p;
 
     for (method = 0; method < 3; method++) {
+      /* skip formats that ffmpegcolorspace can't handle */
+      if (caps_are_64bpp (caps))
+        continue;
+
       GST_DEBUG ("Running test for caps '%" GST_PTR_FORMAT "'"
           " from %dx%u to %dx%d with method %d", caps, src_width, src_height,
           dest_width, dest_height, method);
@@ -248,7 +277,6 @@ GST_START_TEST (name) \
     run_test (caps, src_width, src_height, \
         dest_width, dest_height, method, \
         NULL, NULL, NULL, NULL); \
-    \
     gst_caps_unref (caps); \
     p++; \
   } \
@@ -379,6 +407,9 @@ _test_negotiation (const gchar * src_templ, const gchar * sink_templ,
   TestNegotiationData data = { 0, 0, 0, 0, FALSE, NULL };
   GstPad *pad;
 
+  GST_DEBUG ("Running test for src templ caps '%s' and sink templ caps '%s'",
+      src_templ, sink_templ);
+
   pipeline = gst_element_factory_make ("pipeline", "pipeline");
   fail_unless (pipeline != NULL);
 
@@ -503,6 +534,282 @@ GST_START_TEST (test_negotiation)
 
 GST_END_TEST;
 
+#define GST_TYPE_TEST_REVERSE_NEGOTIATION_SINK \
+  (gst_test_reverse_negotiation_sink_get_type())
+#define GST_TEST_REVERSE_NEGOTIATION_SINK(obj) \
+  (G_TYPE_CHECK_INSTANCE_CAST((obj),GST_TYPE_TEST_REVERSE_NEGOTIATION_SINK,GstTestReverseNegotiationSink))
+#define GST_TEST_REVERSE_NEGOTIATION_SINK_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_CAST((klass),GST_TYPE_TEST_REVERSE_NEGOTIATION_SINK,GstTestReverseNegotiationSinkClass))
+#define GST_IS_TEST_REVERSE_NEGOTIATION_SINK(obj) \
+  (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_TEST_REVERSE_NEGOTIATION_SINK))
+#define GST_IS_TEST_REVERSE_NEGOTIATION_SINK_CLASS(klass) \
+  (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_TEST_REVERSE_NEGOTIATION_SINK))
+#define GST_TEST_REVERSE_NEGOTIATION_SINK_CAST(obj) ((GstTestReverseNegotiationSink *)obj)
+
+typedef struct _GstTestReverseNegotiationSink GstTestReverseNegotiationSink;
+typedef struct _GstTestReverseNegotiationSinkClass
+    GstTestReverseNegotiationSinkClass;
+struct _GstTestReverseNegotiationSink
+{
+  GstBaseSink element;
+  gint nbuffers;
+};
+
+struct _GstTestReverseNegotiationSinkClass
+{
+  GstBaseSinkClass parent_class;
+};
+
+GType gst_test_reverse_negotiation_sink_get_type (void);
+
+GST_BOILERPLATE (GstTestReverseNegotiationSink,
+    gst_test_reverse_negotiation_sink, GstBaseSink, GST_TYPE_BASE_SINK);
+
+static GstStaticPadTemplate sinktemplate = GST_STATIC_PAD_TEMPLATE ("sink",
+    GST_PAD_SINK,
+    GST_PAD_ALWAYS,
+    GST_STATIC_CAPS (GST_VIDEO_CAPS_xRGB));
+
+static GstFlowReturn
+gst_test_reverse_negotiation_sink_buffer_alloc (GstBaseSink * bsink,
+    guint64 offset, guint size, GstCaps * caps, GstBuffer ** buf)
+{
+  GstTestReverseNegotiationSink *sink =
+      GST_TEST_REVERSE_NEGOTIATION_SINK (bsink);
+  GstVideoFormat fmt;
+  gint width, height;
+
+  fail_unless (gst_video_format_parse_caps (caps, &fmt, &width, &height));
+
+  if (sink->nbuffers < 2) {
+    *buf =
+        gst_buffer_new_and_alloc (gst_video_format_get_size (fmt, width,
+            height));
+    gst_buffer_set_caps (*buf, caps);
+  } else {
+    gint fps_n, fps_d;
+
+    fail_unless (gst_video_parse_caps_framerate (caps, &fps_n, &fps_d));
+
+    width = 512;
+    height = 128;
+    *buf =
+        gst_buffer_new_and_alloc (gst_video_format_get_size (fmt, width,
+            height));
+    caps = gst_video_format_new_caps (fmt, width, height, fps_n, fps_d, 1, 1);
+    gst_buffer_set_caps (*buf, caps);
+    gst_caps_unref (caps);
+  }
+
+  return GST_FLOW_OK;
+}
+
+static GstFlowReturn
+gst_test_reverse_negotiation_sink_render (GstBaseSink * bsink,
+    GstBuffer * buffer)
+{
+  GstTestReverseNegotiationSink *sink =
+      GST_TEST_REVERSE_NEGOTIATION_SINK (bsink);
+  GstCaps *caps = gst_buffer_get_caps (buffer);
+  GstVideoFormat fmt;
+  gint width, height;
+
+  fail_unless (caps != NULL);
+  fail_unless (gst_video_format_parse_caps (caps, &fmt, &width, &height));
+
+  sink->nbuffers++;
+
+  /* The third buffer is still in the old size
+   * because the ffmpegcolorspaces can't convert
+   * the frame sizes
+   */
+  if (sink->nbuffers > 3) {
+    fail_unless_equals_int (width, 512);
+    fail_unless_equals_int (height, 128);
+  }
+
+  gst_caps_unref (caps);
+
+  return GST_FLOW_OK;
+}
+
+static void
+gst_test_reverse_negotiation_sink_base_init (gpointer g_class)
+{
+  GstElementClass *gstelement_class = GST_ELEMENT_CLASS (g_class);
+
+  gst_element_class_set_details_simple (gstelement_class,
+      "Test Reverse Negotiation Sink",
+      "Sink",
+      "Some test sink", "Sebastian Dröge <sebastian.droege@collabora.co.uk>");
+  gst_element_class_add_static_pad_template (gstelement_class,
+      &sinktemplate);
+}
+
+static void
+gst_test_reverse_negotiation_sink_class_init (GstTestReverseNegotiationSinkClass
+    * klass)
+{
+  GstBaseSinkClass *gstbase_sink_class;
+
+  gstbase_sink_class = GST_BASE_SINK_CLASS (klass);
+
+  gstbase_sink_class->buffer_alloc =
+      GST_DEBUG_FUNCPTR (gst_test_reverse_negotiation_sink_buffer_alloc);
+  gstbase_sink_class->render =
+      GST_DEBUG_FUNCPTR (gst_test_reverse_negotiation_sink_render);
+}
+
+static void
+gst_test_reverse_negotiation_sink_init (GstTestReverseNegotiationSink * sink,
+    GstTestReverseNegotiationSinkClass * g_class)
+{
+  sink->nbuffers = 0;
+}
+
+static void
+_test_reverse_negotiation_message (GstBus * bus, GstMessage * message,
+    GMainLoop * loop)
+{
+  GError *err = NULL;
+  gchar *debug;
+
+  switch (GST_MESSAGE_TYPE (message)) {
+    case GST_MESSAGE_ERROR:
+      gst_message_parse_error (message, &err, &debug);
+      gst_object_default_error (GST_MESSAGE_SRC (message), err, debug);
+      g_error_free (err);
+      g_free (debug);
+      g_assert_not_reached ();
+      break;
+    case GST_MESSAGE_WARNING:
+      gst_message_parse_warning (message, &err, &debug);
+      gst_object_default_error (GST_MESSAGE_SRC (message), err, debug);
+      g_error_free (err);
+      g_free (debug);
+      g_assert_not_reached ();
+      break;
+    case GST_MESSAGE_EOS:
+      g_main_loop_quit (loop);
+      break;
+    default:
+      break;
+  }
+}
+
+GST_START_TEST (test_reverse_negotiation)
+{
+  GstElement *pipeline;
+  GstElement *src, *csp1, *scale, *csp2, *sink;
+  GstBus *bus;
+  GMainLoop *loop;
+
+  pipeline = gst_element_factory_make ("pipeline", "pipeline");
+  fail_unless (pipeline != NULL);
+
+  src = gst_element_factory_make ("videotestsrc", "src");
+  fail_unless (src != NULL);
+  g_object_set (G_OBJECT (src), "num-buffers", 8, NULL);
+
+  csp1 = gst_element_factory_make ("ffmpegcolorspace", "csp1");
+  fail_unless (csp1 != NULL);
+
+  scale = gst_element_factory_make ("videoscale", "scale");
+  fail_unless (scale != NULL);
+
+  csp2 = gst_element_factory_make ("ffmpegcolorspace", "csp2");
+  fail_unless (csp2 != NULL);
+
+  sink = g_object_new (GST_TYPE_TEST_REVERSE_NEGOTIATION_SINK, NULL);
+  fail_unless (sink != NULL);
+  g_object_set (sink, "async", FALSE, NULL);
+
+  gst_bin_add_many (GST_BIN (pipeline), src, csp1, scale, csp2, sink, NULL);
+
+  fail_unless (gst_element_link_pads_full (src, "src", csp1, "sink",
+          LINK_CHECK_FLAGS));
+  fail_unless (gst_element_link_pads_full (csp1, "src", scale, "sink",
+          LINK_CHECK_FLAGS));
+  fail_unless (gst_element_link_pads_full (scale, "src", csp2, "sink",
+          LINK_CHECK_FLAGS));
+  fail_unless (gst_element_link_pads_full (csp2, "src", sink, "sink",
+          LINK_CHECK_FLAGS));
+
+  loop = g_main_loop_new (NULL, FALSE);
+
+  bus = gst_element_get_bus (pipeline);
+  fail_unless (bus != NULL);
+  gst_bus_add_signal_watch (bus);
+
+  g_signal_connect (bus, "message",
+      G_CALLBACK (_test_reverse_negotiation_message), loop);
+
+  gst_object_unref (bus);
+
+  fail_unless (gst_element_set_state (pipeline,
+          GST_STATE_PLAYING) == GST_STATE_CHANGE_SUCCESS);
+
+  g_main_loop_run (loop);
+
+  fail_unless (gst_element_set_state (pipeline,
+          GST_STATE_NULL) == GST_STATE_CHANGE_SUCCESS);
+
+  gst_object_unref (pipeline);
+  g_main_loop_unref (loop);
+}
+
+GST_END_TEST;
+
+GST_START_TEST (test_basetransform_negotiation)
+{
+  GstElement *pipeline, *src, *sink, *scale, *capsfilter1, *capsfilter2;
+  GstMessage *msg;
+  GstCaps *caps;
+
+  pipeline = gst_pipeline_new (NULL);
+  src = gst_element_factory_make ("videotestsrc", NULL);
+  capsfilter1 = gst_element_factory_make ("capsfilter", NULL);
+  scale = gst_element_factory_make ("videoscale", NULL);
+  capsfilter2 = gst_element_factory_make ("capsfilter", NULL);
+  sink = gst_element_factory_make ("fakesink", NULL);
+  fail_unless (pipeline && src && capsfilter1 && scale && capsfilter2 && sink);
+
+  g_object_set (src, "num-buffers", 3, NULL);
+
+  caps = gst_caps_new_simple ("video/x-raw-yuv", "format", GST_TYPE_FOURCC,
+      GST_MAKE_FOURCC ('U', 'Y', 'V', 'Y'), "width", G_TYPE_INT, 352,
+      "height", G_TYPE_INT, 288, "framerate", GST_TYPE_FRACTION, 30, 1,
+      "pixel-aspect-ratio", GST_TYPE_FRACTION, 1, 1, NULL);
+  g_object_set (capsfilter1, "caps", caps, NULL);
+  gst_caps_unref (caps);
+
+  /* same caps, just different pixel-aspect-ratio */
+  caps = gst_caps_new_simple ("video/x-raw-yuv", "format", GST_TYPE_FOURCC,
+      GST_MAKE_FOURCC ('U', 'Y', 'V', 'Y'), "width", G_TYPE_INT, 352,
+      "height", G_TYPE_INT, 288, "framerate", GST_TYPE_FRACTION, 30, 1,
+      "pixel-aspect-ratio", GST_TYPE_FRACTION, 12, 11, NULL);
+  g_object_set (capsfilter2, "caps", caps, NULL);
+  gst_caps_unref (caps);
+
+  gst_bin_add_many (GST_BIN (pipeline), src, capsfilter1, scale, capsfilter2,
+      sink, NULL);
+  fail_unless (gst_element_link_many (src, capsfilter1, scale, capsfilter2,
+          sink, NULL));
+
+  fail_unless_equals_int (gst_element_set_state (pipeline, GST_STATE_PLAYING),
+      GST_STATE_CHANGE_ASYNC);
+
+  msg = gst_bus_timed_pop_filtered (GST_ELEMENT_BUS (pipeline), -1,
+      GST_MESSAGE_EOS | GST_MESSAGE_ERROR);
+  fail_unless_equals_int (GST_MESSAGE_TYPE (msg), GST_MESSAGE_EOS);
+  gst_message_unref (msg);
+
+  gst_element_set_state (pipeline, GST_STATE_NULL);
+  gst_object_unref (pipeline);
+}
+
+GST_END_TEST;
+
 static Suite *
 videoscale_suite (void)
 {
@@ -549,7 +856,10 @@ videoscale_suite (void)
   tcase_add_test (tc_chain, test_upscale_1x240_640x480_method_1);
   tcase_add_test (tc_chain, test_upscale_1x240_640x480_method_2);
   tcase_add_test (tc_chain, test_negotiation);
+  tcase_add_test (tc_chain, test_reverse_negotiation);
+  tcase_add_test (tc_chain, test_basetransform_negotiation);
 
+  GST_ERROR ("FIXME: test 64-bpp formats as well");
   return s;
 }
 

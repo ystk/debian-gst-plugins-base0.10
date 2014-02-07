@@ -3,6 +3,8 @@
 
 #include <gst/gst.h>
 #include <gst/video/video.h>
+#include <gst/video/video-overlay-composition.h>
+#include <gst/controller/gstcontroller.h>
 #include <pango/pangocairo.h>
 
 G_BEGIN_DECLS
@@ -26,14 +28,18 @@ typedef struct _GstTextOverlayClass GstTextOverlayClass;
  * GstTextOverlayVAlign:
  * @GST_TEXT_OVERLAY_VALIGN_BASELINE: draw text on the baseline
  * @GST_TEXT_OVERLAY_VALIGN_BOTTOM: draw text on the bottom
- * @GST_TEXT_OVERLAY_VALIGN_TOP: draw test on top
+ * @GST_TEXT_OVERLAY_VALIGN_TOP: draw text on top
+ * @GST_TEXT_OVERLAY_VALIGN_POS: draw text according to the #GstTextOverlay:ypos property
+ * @GST_TEXT_OVERLAY_VALIGN_CENTER: draw text vertically centered
  *
  * Vertical alignment of the text.
  */
 typedef enum {
     GST_TEXT_OVERLAY_VALIGN_BASELINE,
     GST_TEXT_OVERLAY_VALIGN_BOTTOM,
-    GST_TEXT_OVERLAY_VALIGN_TOP
+    GST_TEXT_OVERLAY_VALIGN_TOP,
+    GST_TEXT_OVERLAY_VALIGN_POS,
+    GST_TEXT_OVERLAY_VALIGN_CENTER
 } GstTextOverlayVAlign;
 
 /**
@@ -41,13 +47,17 @@ typedef enum {
  * @GST_TEXT_OVERLAY_HALIGN_LEFT: align text left
  * @GST_TEXT_OVERLAY_HALIGN_CENTER: align text center
  * @GST_TEXT_OVERLAY_HALIGN_RIGHT: align text right
+ * @GST_TEXT_OVERLAY_HALIGN_POS: position text according to the #GstTextOverlay:xpos property
  *
  * Horizontal alignment of the text.
  */
+/* FIXME 0.11: remove GST_TEXT_OVERLAY_HALIGN_UNUSED */
 typedef enum {
     GST_TEXT_OVERLAY_HALIGN_LEFT,
     GST_TEXT_OVERLAY_HALIGN_CENTER,
-    GST_TEXT_OVERLAY_HALIGN_RIGHT
+    GST_TEXT_OVERLAY_HALIGN_RIGHT,
+    GST_TEXT_OVERLAY_HALIGN_UNUSED,
+    GST_TEXT_OVERLAY_HALIGN_POS
 } GstTextOverlayHAlign;
 
 /**
@@ -86,67 +96,76 @@ typedef enum {
  * Opaque textoverlay object structure
  */
 struct _GstTextOverlay {
-    GstElement               element;
+    GstElement                  element;
 
-    GstPad                  *video_sinkpad;
-    GstPad                  *text_sinkpad;
-    GstPad                  *srcpad;
+    GstPad                     *video_sinkpad;
+    GstPad                     *text_sinkpad;
+    GstPad                     *srcpad;
 
-    GstSegment               segment;
-    GstSegment               text_segment;
-    GstBuffer               *text_buffer;
-    gboolean                text_linked;
-    gboolean                video_flushing;
-    gboolean                video_eos;
-    gboolean                text_flushing;
-    gboolean                text_eos;
+    GstSegment                  segment;
+    GstSegment                  text_segment;
+    GstBuffer                  *text_buffer;
+    gboolean                    text_linked;
+    gboolean                    video_flushing;
+    gboolean                    video_eos;
+    gboolean                    text_flushing;
+    gboolean                    text_eos;
 
-    GCond                   *cond;  /* to signal removal of a queued text
+    GCond                      *cond;  /* to signal removal of a queued text
                                      * buffer, arrival of a text buffer,
                                      * a text segment update, or a change
                                      * in status (e.g. shutdown, flushing) */
 
-    gint                     width;
-    gint                     height;
-    gint                     fps_n;
-    gint                     fps_d;
-    GstVideoFormat           format;
+    gint                        width;
+    gint                        height;
+    gint                        fps_n;
+    gint                        fps_d;
+    GstVideoFormat              format;
 
-    GstTextOverlayVAlign     valign;
-    GstTextOverlayHAlign     halign;
-    GstTextOverlayWrapMode   wrap_mode;
-    GstTextOverlayLineAlign  line_align;
+    GstTextOverlayVAlign        valign;
+    GstTextOverlayHAlign        halign;
+    GstTextOverlayWrapMode      wrap_mode;
+    GstTextOverlayLineAlign     line_align;
 
-    gint                     xpad;
-    gint                     ypad;
-    gint                     deltax;
-    gint                     deltay;
-    gchar                   *default_text;
-    gboolean                 want_shading;
-    gboolean                 silent;
-    gboolean                 wait_text;
+    gint                        xpad;
+    gint                        ypad;
+    gint                        deltax;
+    gint                        deltay;
+    gdouble                     xpos;
+    gdouble                     ypos;
+    gchar                      *default_text;
+    gboolean                    want_shading;
+    gboolean                    silent;
+    gboolean                    wait_text;
+    guint                       color, outline_color;
 
-    PangoLayout             *layout;
-    gdouble                  shadow_offset;
-    gdouble                  outline_offset;
-    guchar                  *text_image;
-    gint                     image_width;
-    gint                     image_height;
-    gint                     baseline_y;
+    PangoLayout                *layout;
+    gdouble                     shadow_offset;
+    gboolean                    want_shadow;
+    gdouble                     outline_offset;
+    GstBuffer                  *text_image;
+    gint                        image_width;
+    gint                        image_height;
+    gint                        baseline_y;
 
-    gboolean                 auto_adjust_size;
-    gboolean                 need_render;
+    gboolean                    auto_adjust_size;
+    gboolean                    need_render;
 
-    gint                     shading_value;  /* for timeoverlay subclass */
+    gint                        shading_value;  /* for timeoverlay subclass */
 
-    gboolean                 have_pango_markup;
-    gboolean                 use_vertical_render;
+    gboolean                    have_pango_markup;
+    gboolean                    use_vertical_render;
+
+    gboolean                    attach_compo_to_buffer;
+
+    GstVideoOverlayComposition *composition;
 };
 
 struct _GstTextOverlayClass {
     GstElementClass parent_class;
 
     PangoContext *pango_context;
+    GMutex       *pango_lock;
 
     gchar *     (*get_text) (GstTextOverlay *overlay, GstBuffer *video_frame);
 };

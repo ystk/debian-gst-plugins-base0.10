@@ -128,8 +128,10 @@ gst_riff_create_video_caps (guint32 codec_fcc,
       break;
 
     case GST_MAKE_FOURCC ('U', 'Y', 'V', 'Y'):
+    case GST_MAKE_FOURCC ('2', 'v', 'u', 'y'):
       caps = gst_caps_new_simple ("video/x-raw-yuv",
-          "format", GST_TYPE_FOURCC, codec_fcc, NULL);
+          "format", GST_TYPE_FOURCC, GST_MAKE_FOURCC ('U', 'Y', 'V', 'Y'),
+          NULL);
       if (codec_name)
         *codec_name = g_strdup ("Uncompressed packed YUV 4:2:2");
       break;
@@ -712,6 +714,22 @@ gst_riff_create_video_caps (guint32 codec_fcc,
       }
       if (codec_name)
         *codec_name = g_strdup ("TechSmith Camtasia");
+      break;
+    }
+
+    case GST_MAKE_FOURCC ('C', 'S', 'C', 'D'):
+    {
+      if (strf) {
+        gint depth = (strf->bit_cnt != 0) ? (gint) strf->bit_cnt : 24;
+
+        caps = gst_caps_new_simple ("video/x-camstudio", "depth", G_TYPE_INT,
+            depth, NULL);
+      } else {
+        /* template caps */
+        caps = gst_caps_new_simple ("video/x-camstudio", NULL);
+      }
+      if (codec_name)
+        *codec_name = g_strdup ("Camstudio");
       break;
     }
 
@@ -1735,6 +1753,7 @@ gst_riff_create_video_template_caps (void)
     GST_MAKE_FOURCC ('A', 'S', 'V', '1'),
     GST_MAKE_FOURCC ('A', 'S', 'V', '2'),
     GST_MAKE_FOURCC ('C', 'L', 'J', 'R'),
+    GST_MAKE_FOURCC ('C', 'S', 'C', 'D'),
     GST_MAKE_FOURCC ('C', 'Y', 'U', 'V'),
     GST_MAKE_FOURCC ('D', 'I', 'B', ' '),
     GST_MAKE_FOURCC ('D', 'I', 'V', '3'),

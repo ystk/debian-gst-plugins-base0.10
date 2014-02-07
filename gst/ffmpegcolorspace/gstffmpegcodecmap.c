@@ -151,7 +151,7 @@ gst_ff_aud_caps_new (AVCodecContext * context, const char *mimetype,
 }
 
 /* Convert a FFMPEG Pixel Format and optional AVCodecContext
- * to a GstCaps. If the context is ommitted, no fixed values
+ * to a GstCaps. If the context is omitted, no fixed values
  * for video/audio size will be included in the GstCaps
  *
  * See below for usefulness
@@ -169,6 +169,9 @@ gst_ffmpeg_pixfmt_to_caps (enum PixelFormat pix_fmt, AVCodecContext * context)
   switch (pix_fmt) {
     case PIX_FMT_YUV420P:
       fmt = GST_MAKE_FOURCC ('I', '4', '2', '0');
+      break;
+    case PIX_FMT_YUVA420P:
+      fmt = GST_MAKE_FOURCC ('A', '4', '2', '0');
       break;
     case PIX_FMT_NV12:
       fmt = GST_MAKE_FOURCC ('N', 'V', '1', '2');
@@ -450,7 +453,7 @@ gst_ffmpeg_pixfmt_to_caps (enum PixelFormat pix_fmt, AVCodecContext * context)
 }
 
 /* Convert a FFMPEG Sample Format and optional AVCodecContext
- * to a GstCaps. If the context is ommitted, no fixed values
+ * to a GstCaps. If the context is omitted, no fixed values
  * for video/audio size will be included in the GstCaps
  *
  * See below for usefulness
@@ -493,7 +496,7 @@ gst_ffmpeg_smpfmt_to_caps (enum SampleFormat sample_fmt,
 }
 
 /* Convert a FFMPEG codec Type and optional AVCodecContext
- * to a GstCaps. If the context is ommitted, no fixed values
+ * to a GstCaps. If the context is omitted, no fixed values
  * for video/audio size will be included in the GstCaps
  *
  * CodecType is primarily meant for uncompressed data GstCaps!
@@ -635,6 +638,9 @@ gst_ffmpeg_caps_to_pixfmt (const GstCaps * caps,
           break;
         case GST_MAKE_FOURCC ('I', '4', '2', '0'):
           context->pix_fmt = PIX_FMT_YUV420P;
+          break;
+        case GST_MAKE_FOURCC ('A', '4', '2', '0'):
+          context->pix_fmt = PIX_FMT_YUVA420P;
           break;
         case GST_MAKE_FOURCC ('N', 'V', '1', '2'):
           context->pix_fmt = PIX_FMT_NV12;
@@ -781,7 +787,7 @@ gst_ffmpeg_caps_to_pixfmt (const GstCaps * caps,
 }
 
 /* Convert a GstCaps and a FFMPEG codec Type to a
- * AVCodecContext. If the context is ommitted, no fixed values
+ * AVCodecContext. If the context is omitted, no fixed values
  * for video/audio size will be included in the context
  *
  * CodecType is primarily meant for uncompressed data GstCaps!
@@ -857,6 +863,23 @@ gst_ffmpegcsp_avpicture_fill (AVPicture * picture,
       return size + 2 * size2;
       /* PIX_FMT_YVU420P = YV12: same as PIX_FMT_YUV420P, but
        *  with U and V plane swapped. Strides as in videotestsrc */
+    case PIX_FMT_YUVA420P:
+      stride = GST_ROUND_UP_4 (width);
+      h2 = ROUND_UP_X (height, pinfo->y_chroma_shift);
+      size = stride * h2;
+      w2 = DIV_ROUND_UP_X (width, pinfo->x_chroma_shift);
+      stride2 = GST_ROUND_UP_4 (w2);
+      h2 = DIV_ROUND_UP_X (height, pinfo->y_chroma_shift);
+      size2 = stride2 * h2;
+      picture->data[0] = ptr;
+      picture->data[1] = picture->data[0] + size;
+      picture->data[2] = picture->data[1] + size2;
+      picture->data[3] = picture->data[2] + size2;
+      picture->linesize[0] = stride;
+      picture->linesize[1] = stride2;
+      picture->linesize[2] = stride2;
+      picture->linesize[3] = stride;
+      return 2 * size + 2 * size2;
     case PIX_FMT_YVU410P:
     case PIX_FMT_YVU420P:
       stride = GST_ROUND_UP_4 (width);
@@ -935,14 +958,14 @@ gst_ffmpegcsp_avpicture_fill (AVPicture * picture,
       picture->linesize[0] = stride;
       return size;
     case PIX_FMT_UYVY411:
-      /* FIXME, probably not the right stride */
-      stride = GST_ROUND_UP_4 (width);
+      stride =
+          GST_ROUND_UP_4 (GST_ROUND_UP_4 (width) + GST_ROUND_UP_4 (width) / 2);
       size = stride * height;
       picture->data[0] = ptr;
       picture->data[1] = NULL;
       picture->data[2] = NULL;
-      picture->linesize[0] = width + width / 2;
-      return size + size / 2;
+      picture->linesize[0] = stride;
+      return size;
     case PIX_FMT_Y800:
     case PIX_FMT_GRAY8:
       stride = GST_ROUND_UP_4 (width);

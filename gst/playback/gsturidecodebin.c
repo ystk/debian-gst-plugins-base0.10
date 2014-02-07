@@ -34,10 +34,11 @@
 #include <gst/gst-i18n-plugin.h>
 #include <gst/pbutils/missing-plugins.h>
 
-#include "gstfactorylists.h"
 #include "gstplay-marshal.h"
 #include "gstplay-enum.h"
 #include "gstrawcaps.h"
+
+#include "gst/glib-compat-private.h"
 
 #define GST_TYPE_URI_DECODE_BIN \
   (gst_uri_decode_bin_get_type())
@@ -58,6 +59,12 @@ typedef struct _GstURIDecodeBinClass GstURIDecodeBinClass;
 #define GST_URI_DECODE_BIN_LOCK(dec) (g_mutex_lock(GST_URI_DECODE_BIN_GET_LOCK(dec)))
 #define GST_URI_DECODE_BIN_UNLOCK(dec) (g_mutex_unlock(GST_URI_DECODE_BIN_GET_LOCK(dec)))
 
+typedef struct _GstURIDecodeBinStream
+{
+  gulong probe_id;
+  guint bitrate;
+} GstURIDecodeBinStream;
+
 /**
  * GstURIDecodeBin
  *
@@ -71,7 +78,7 @@ struct _GstURIDecodeBin
 
   GMutex *factories_lock;
   guint32 factories_cookie;
-  GValueArray *factories;       /* factories we can use for selecting elements */
+  GList *factories;             /* factories we can use for selecting elements */
 
   gchar *uri;
   guint connection_speed;
@@ -92,7 +99,7 @@ struct _GstURIDecodeBin
   guint have_type_id;           /* have-type signal id from typefind */
   GSList *decodebins;
   GSList *pending_decodebins;
-  GSList *srcpads;
+  GHashTable *streams;
   gint numpads;
 
   /* for dynamic sources */
@@ -100,9 +107,11 @@ struct _GstURIDecodeBin
   guint src_nmp_sig_id;         /* no-more-pads signal id */
   gint pending;
 
-  gboolean async_pending;       /* async-start has been emited */
+  gboolean async_pending;       /* async-start has been emitted */
 
   gboolean expose_allstreams;   /* Whether to expose unknow type streams or not */
+
+  guint64 ring_buffer_max_size; /* 0 means disabled */
 };
 
 struct _GstURIDecodeBinClass
@@ -118,11 +127,14 @@ struct _GstURIDecodeBinClass
   /* signal fired to get a list of factories to try to autoplug */
   GValueArray *(*autoplug_factories) (GstElement * element, GstPad * pad,
       GstCaps * caps);
+  /* signal fired to sort the factories */
+  GValueArray *(*autoplug_sort) (GstElement * element, GstPad * pad,
+      GstCaps * caps, GValueArray * factories);
   /* signal fired to select from the proposed list of factories */
     GstAutoplugSelectResult (*autoplug_select) (GstElement * element,
-      GstPad * pad, GstCaps * caps, GValueArray * factories);
+      GstPad * pad, GstCaps * caps, GstElementFactory * factory);
 
-  /* emited when all data is decoded */
+  /* emitted when all data is decoded */
   void (*drained) (GstElement * element);
 };
 
@@ -144,6 +156,8 @@ enum
   SIGNAL_AUTOPLUG_FACTORIES,
   SIGNAL_AUTOPLUG_SELECT,
   SIGNAL_DRAINED,
+  SIGNAL_AUTOPLUG_SORT,
+  SIGNAL_SOURCE_SETUP,
   LAST_SIGNAL
 };
 
@@ -158,6 +172,7 @@ enum
 #define DEFAULT_DOWNLOAD            FALSE
 #define DEFAULT_USE_BUFFERING       FALSE
 #define DEFAULT_EXPOSE_ALL_STREAMS  TRUE
+#define DEFAULT_RING_BUFFER_MAX_SIZE 0
 
 enum
 {
@@ -172,6 +187,7 @@ enum
   PROP_DOWNLOAD,
   PROP_USE_BUFFERING,
   PROP_EXPOSE_ALL_STREAMS,
+  PROP_RING_BUFFER_MAX_SIZE,
   PROP_LAST
 };
 
@@ -199,8 +215,7 @@ gst_uri_decode_bin_base_init (gpointer g_class)
 {
   GstElementClass *gstelement_class = GST_ELEMENT_CLASS (g_class);
 
-  gst_element_class_add_pad_template (gstelement_class,
-      gst_static_pad_template_get (&srctemplate));
+  gst_element_class_add_static_pad_template (gstelement_class, &srctemplate);
   gst_element_class_set_details_simple (gstelement_class,
       "URI Decoder", "Generic/Bin/Decoder",
       "Autoplug and decode an URI to raw media",
@@ -248,6 +263,22 @@ _gst_select_accumulator (GSignalInvocationHint * ihint,
 }
 
 static gboolean
+_gst_array_hasvalue_accumulator (GSignalInvocationHint * ihint,
+    GValue * return_accu, const GValue * handler_return, gpointer dummy)
+{
+  gpointer array;
+
+  array = g_value_get_boxed (handler_return);
+  if (!(ihint->run_type & G_SIGNAL_RUN_CLEANUP))
+    g_value_set_boxed (return_accu, array);
+
+  if (array != NULL)
+    return FALSE;
+
+  return TRUE;
+}
+
+static gboolean
 gst_uri_decode_bin_autoplug_continue (GstElement * element, GstPad * pad,
     GstCaps * caps)
 {
@@ -263,8 +294,10 @@ gst_uri_decode_bin_update_factories_list (GstURIDecodeBin * dec)
       dec->factories_cookie !=
       gst_default_registry_get_feature_list_cookie ()) {
     if (dec->factories)
-      g_value_array_free (dec->factories);
-    dec->factories = gst_factory_list_get_elements (GST_FACTORY_LIST_DECODER);
+      gst_plugin_feature_list_free (dec->factories);
+    dec->factories =
+        gst_element_factory_list_get_elements
+        (GST_ELEMENT_FACTORY_TYPE_DECODABLE, GST_RANK_MARGINAL);
     dec->factories_cookie = gst_default_registry_get_feature_list_cookie ();
   }
 }
@@ -273,6 +306,7 @@ static GValueArray *
 gst_uri_decode_bin_autoplug_factories (GstElement * element, GstPad * pad,
     GstCaps * caps)
 {
+  GList *list, *tmp;
   GValueArray *result;
   GstURIDecodeBin *dec = GST_URI_DECODE_BIN_CAST (element);
 
@@ -281,14 +315,44 @@ gst_uri_decode_bin_autoplug_factories (GstElement * element, GstPad * pad,
   /* return all compatible factories for caps */
   g_mutex_lock (dec->factories_lock);
   gst_uri_decode_bin_update_factories_list (dec);
-  result = gst_factory_list_filter (dec->factories, caps);
+  list =
+      gst_element_factory_list_filter (dec->factories, caps, GST_PAD_SINK,
+      FALSE);
   g_mutex_unlock (dec->factories_lock);
+
+  result = g_value_array_new (g_list_length (list));
+  for (tmp = list; tmp; tmp = tmp->next) {
+    GstElementFactory *factory = GST_ELEMENT_FACTORY_CAST (tmp->data);
+    GValue val = { 0, };
+
+    g_value_init (&val, G_TYPE_OBJECT);
+    g_value_set_object (&val, factory);
+    g_value_array_append (result, &val);
+    g_value_unset (&val);
+  }
+  gst_plugin_feature_list_free (list);
 
   GST_DEBUG_OBJECT (element, "autoplug-factories returns %p", result);
 
   return result;
 }
 
+static GValueArray *
+gst_uri_decode_bin_autoplug_sort (GstElement * element, GstPad * pad,
+    GstCaps * caps, GValueArray * factories)
+{
+  return NULL;
+}
+
+static GstAutoplugSelectResult
+gst_uri_decode_bin_autoplug_select (GstElement * element, GstPad * pad,
+    GstCaps * caps, GstElementFactory * factory)
+{
+  GST_DEBUG_OBJECT (element, "default autoplug-select returns TRY");
+
+  /* Try factory. */
+  return GST_AUTOPLUG_SELECT_TRY;
+}
 
 static void
 gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
@@ -311,7 +375,7 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
 
   g_object_class_install_property (gobject_class, PROP_SOURCE,
       g_param_spec_object ("source", "Source", "Source object used",
-          GST_TYPE_ELEMENT, G_PARAM_READABLE));
+          GST_TYPE_ELEMENT, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
 
   g_object_class_install_property (gobject_class, PROP_CONNECTION_SPEED,
       g_param_spec_uint ("connection-speed", "Connection Speed",
@@ -385,10 +449,26 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
           "Expose all streams, including those of unknown type or that don't match the 'caps' property",
           DEFAULT_EXPOSE_ALL_STREAMS,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
+  /**
+   * GstURIDecodeBin::ring-buffer-max-size
+   *
+   * The maximum size of the ring buffer in kilobytes. If set to 0, the ring
+   * buffer is disabled. Default is 0.
+   *
+   * Since: 0.10.31
+   */
+  g_object_class_install_property (gobject_class, PROP_RING_BUFFER_MAX_SIZE,
+      g_param_spec_uint64 ("ring-buffer-max-size",
+          "Max. ring buffer size (bytes)",
+          "Max. amount of data in the ring buffer (bytes, 0 = ring buffer disabled)",
+          0, G_MAXUINT, DEFAULT_RING_BUFFER_MAX_SIZE,
+          G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+
   /**
    * GstURIDecodeBin::unknown-type:
-   * @bin: The uridecodebin
-   * @pad: the new pad containing caps that cannot be resolved to a 'final'
+   * @bin: The uridecodebin.
+   * @pad: the new pad containing caps that cannot be resolved to a 'final'.
    * stream type.
    * @caps: the #GstCaps of the pad that cannot be resolved.
    *
@@ -403,12 +483,18 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
 
   /**
    * GstURIDecodeBin::autoplug-continue:
-   * @bin: The uridecodebin
+   * @bin: The uridecodebin.
    * @pad: The #GstPad.
    * @caps: The #GstCaps found.
    *
    * This signal is emitted whenever uridecodebin finds a new stream. It is
    * emitted before looking for any elements that can handle that stream.
+   *
+   * <note>
+   *   Invocation of signal handlers stops after the first signal handler
+   *   returns #FALSE. Signal handlers are invoked in the order they were
+   *   connected in.
+   * </note>
    *
    * Returns: #TRUE if you wish uridecodebin to look for elements that can
    * handle the given @caps. If #FALSE, those caps will be considered as
@@ -424,11 +510,11 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
 
   /**
    * GstURIDecodeBin::autoplug-factories:
-   * @bin: The decodebin
+   * @bin: The uridecodebin.
    * @pad: The #GstPad.
    * @caps: The #GstCaps found.
    *
-   * This function is emited when an array of possible factories for @caps on
+   * This function is emitted when an array of possible factories for @caps on
    * @pad is needed. Uridecodebin will by default return an array with all
    * compatible factories, sorted by rank.
    *
@@ -436,6 +522,12 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
    *
    * If this function returns an empty array, the pad will be considered as
    * having an unhandled type media type.
+   *
+   * <note>
+   *   Only the signal handler that is connected first will ever by invoked.
+   *   Don't connect signal handlers with the #G_CONNECT_AFTER flag to this
+   *   signal, they will never be invoked!
+   * </note>
    *
    * Returns: a #GValueArray* with a list of factories to try. The factories are
    * by default tried in the returned order or based on the index returned by
@@ -449,14 +541,49 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
       GST_TYPE_PAD, GST_TYPE_CAPS);
 
   /**
-   * GstURIDecodeBin::autoplug-select:
+   * GstURIDecodeBin::autoplug-sort:
+   * @bin: The uridecodebin.
    * @pad: The #GstPad.
    * @caps: The #GstCaps.
-   * @factory: A #GstElementFactory to use
+   * @factories: A #GValueArray of possible #GstElementFactory to use.
+   *
+   * Once decodebin2 has found the possible #GstElementFactory objects to try
+   * for @caps on @pad, this signal is emitted. The purpose of the signal is for
+   * the application to perform additional sorting or filtering on the element
+   * factory array.
+   *
+   * The callee should copy and modify @factories or return #NULL if the
+   * order should not change.
+   *
+   * <note>
+   *   Invocation of signal handlers stops after one signal handler has
+   *   returned something else than #NULL. Signal handlers are invoked in
+   *   the order they were connected in.
+   *   Don't connect signal handlers with the #G_CONNECT_AFTER flag to this
+   *   signal, they will never be invoked!
+   * </note>
+   *
+   * Returns: A new sorted array of #GstElementFactory objects.
+   *
+   * Since: 0.10.33
+   */
+  gst_uri_decode_bin_signals[SIGNAL_AUTOPLUG_SORT] =
+      g_signal_new ("autoplug-sort", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, G_STRUCT_OFFSET (GstURIDecodeBinClass, autoplug_sort),
+      _gst_array_hasvalue_accumulator, NULL,
+      gst_play_marshal_BOXED__OBJECT_BOXED_BOXED, G_TYPE_VALUE_ARRAY, 3,
+      GST_TYPE_PAD, GST_TYPE_CAPS, G_TYPE_VALUE_ARRAY);
+
+  /**
+   * GstURIDecodeBin::autoplug-select:
+   * @bin: The uridecodebin.
+   * @pad: The #GstPad.
+   * @caps: The #GstCaps.
+   * @factory: A #GstElementFactory to use.
    *
    * This signal is emitted once uridecodebin has found all the possible
    * #GstElementFactory that can be used to handle the given @caps. For each of
-   * those factories, this signal is emited.
+   * those factories, this signal is emitted.
    *
    * The signal handler should return a #GST_TYPE_AUTOPLUG_SELECT_RESULT enum
    * value indicating what decodebin2 should do next.
@@ -469,6 +596,12 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
    *
    * A value of #GST_AUTOPLUG_SELECT_SKIP will skip @factory and move to the
    * next factory.
+   *
+   * <note>
+   *   Only the signal handler that is connected first will ever by invoked.
+   *   Don't connect signal handlers with the #G_CONNECT_AFTER flag to this
+   *   signal, they will never be invoked!
+   * </note>
    *
    * Returns: a #GST_TYPE_AUTOPLUG_SELECT_RESULT that indicates the required
    * operation. The default handler will always return
@@ -493,6 +626,24 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
       G_STRUCT_OFFSET (GstURIDecodeBinClass, drained), NULL, NULL,
       gst_marshal_VOID__VOID, G_TYPE_NONE, 0, G_TYPE_NONE);
 
+  /**
+   * GstURIDecodeBin::source-setup:
+   * @bin: the uridecodebin.
+   * @source: source element
+   *
+   * This signal is emitted after the source element has been created, so
+   * it can be configured by setting additional properties (e.g. set a
+   * proxy server for an http source, or set the device and read speed for
+   * an audio cd source). This is functionally equivalent to connecting to
+   * the notify::source signal, but more convenient.
+   *
+   * Since: 0.10.33
+   */
+  gst_uri_decode_bin_signals[SIGNAL_SOURCE_SETUP] =
+      g_signal_new ("source-setup", G_TYPE_FROM_CLASS (klass),
+      G_SIGNAL_RUN_LAST, 0, NULL, NULL,
+      gst_marshal_VOID__OBJECT, G_TYPE_NONE, 1, GST_TYPE_ELEMENT);
+
   gstelement_class->query = GST_DEBUG_FUNCPTR (gst_uri_decode_bin_query);
   gstelement_class->change_state =
       GST_DEBUG_FUNCPTR (gst_uri_decode_bin_change_state);
@@ -503,6 +654,9 @@ gst_uri_decode_bin_class_init (GstURIDecodeBinClass * klass)
       GST_DEBUG_FUNCPTR (gst_uri_decode_bin_autoplug_continue);
   klass->autoplug_factories =
       GST_DEBUG_FUNCPTR (gst_uri_decode_bin_autoplug_factories);
+  klass->autoplug_sort = GST_DEBUG_FUNCPTR (gst_uri_decode_bin_autoplug_sort);
+  klass->autoplug_select =
+      GST_DEBUG_FUNCPTR (gst_uri_decode_bin_autoplug_select);
 }
 
 static void
@@ -510,7 +664,6 @@ gst_uri_decode_bin_init (GstURIDecodeBin * dec, GstURIDecodeBinClass * klass)
 {
   /* first filter out the interesting element factories */
   dec->factories_lock = g_mutex_new ();
-  gst_uri_decode_bin_update_factories_list (dec);
 
   dec->lock = g_mutex_new ();
 
@@ -524,6 +677,9 @@ gst_uri_decode_bin_init (GstURIDecodeBin * dec, GstURIDecodeBinClass * klass)
   dec->download = DEFAULT_DOWNLOAD;
   dec->use_buffering = DEFAULT_USE_BUFFERING;
   dec->expose_allstreams = DEFAULT_EXPOSE_ALL_STREAMS;
+  dec->ring_buffer_max_size = DEFAULT_RING_BUFFER_MAX_SIZE;
+
+  GST_OBJECT_FLAG_SET (dec, GST_ELEMENT_IS_SOURCE);
 }
 
 static void
@@ -537,7 +693,7 @@ gst_uri_decode_bin_finalize (GObject * obj)
   g_free (dec->uri);
   g_free (dec->encoding);
   if (dec->factories)
-    g_value_array_free (dec->factories);
+    gst_plugin_feature_list_free (dec->factories);
   if (dec->caps)
     gst_caps_unref (dec->caps);
 
@@ -609,6 +765,9 @@ gst_uri_decode_bin_set_property (GObject * object, guint prop_id,
     case PROP_EXPOSE_ALL_STREAMS:
       dec->expose_allstreams = g_value_get_boolean (value);
       break;
+    case PROP_RING_BUFFER_MAX_SIZE:
+      dec->ring_buffer_max_size = g_value_get_uint64 (value);
+      break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -665,6 +824,9 @@ gst_uri_decode_bin_get_property (GObject * object, guint prop_id,
       break;
     case PROP_EXPOSE_ALL_STREAMS:
       g_value_set_boolean (value, dec->expose_allstreams);
+      break;
+    case PROP_RING_BUFFER_MAX_SIZE:
+      g_value_set_uint64 (value, dec->ring_buffer_max_size);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -780,7 +942,99 @@ source_no_more_pads (GstElement * element, GstURIDecodeBin * bin)
   no_more_pads_full (element, FALSE, bin);
 }
 
-/* Called by the signal handlers when a decodebin has 
+static void
+configure_stream_buffering (GstURIDecodeBin * decoder)
+{
+  GstElement *queue = NULL;
+  GHashTableIter iter;
+  gpointer key, value;
+  gint bitrate = 0;
+
+  /* automatic configuration enabled ? */
+  if (decoder->buffer_size != -1)
+    return;
+
+  GST_URI_DECODE_BIN_LOCK (decoder);
+  if (decoder->queue)
+    queue = gst_object_ref (decoder->queue);
+
+  g_hash_table_iter_init (&iter, decoder->streams);
+  while (g_hash_table_iter_next (&iter, &key, &value)) {
+    GstURIDecodeBinStream *stream = value;
+
+    if (stream->bitrate && bitrate >= 0)
+      bitrate += stream->bitrate;
+    else
+      bitrate = -1;
+  }
+  GST_URI_DECODE_BIN_UNLOCK (decoder);
+
+  GST_DEBUG_OBJECT (decoder, "overall bitrate %d", bitrate);
+  if (!queue)
+    return;
+
+  if (bitrate > 0) {
+    guint64 time;
+    guint bytes;
+
+    /* all streams have a bitrate;
+     * configure queue size based on queue duration using combined bitrate */
+    g_object_get (queue, "max-size-time", &time, NULL);
+    GST_DEBUG_OBJECT (decoder, "queue buffering time %" GST_TIME_FORMAT,
+        GST_TIME_ARGS (time));
+    if (time > 0) {
+      bytes = gst_util_uint64_scale (time, bitrate, 8 * GST_SECOND);
+      GST_DEBUG_OBJECT (decoder, "corresponds to buffer size %d", bytes);
+      g_object_set (queue, "max-size-bytes", bytes, NULL);
+    }
+  }
+
+  gst_object_unref (queue);
+}
+
+static gboolean
+decoded_pad_event_probe (GstPad * pad, GstEvent * event,
+    GstURIDecodeBin * decoder)
+{
+  GST_LOG_OBJECT (pad, "%s, decoder %p", GST_EVENT_TYPE_NAME (event), decoder);
+
+  /* look for a bitrate tag */
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_TAG:
+    {
+      GstTagList *list;
+      guint bitrate = 0;
+      GstURIDecodeBinStream *stream;
+
+      gst_event_parse_tag (event, &list);
+      if (!gst_tag_list_get_uint_index (list, GST_TAG_NOMINAL_BITRATE, 0,
+              &bitrate)) {
+        gst_tag_list_get_uint_index (list, GST_TAG_BITRATE, 0, &bitrate);
+      }
+      GST_DEBUG_OBJECT (pad, "found bitrate %u", bitrate);
+      if (bitrate) {
+        GST_URI_DECODE_BIN_LOCK (decoder);
+        stream = g_hash_table_lookup (decoder->streams, pad);
+        GST_URI_DECODE_BIN_UNLOCK (decoder);
+        if (stream) {
+          stream->bitrate = bitrate;
+          /* no longer need this probe now */
+          gst_pad_remove_event_probe (pad, stream->probe_id);
+          /* configure buffer if possible */
+          configure_stream_buffering (decoder);
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+
+  /* never drop */
+  return TRUE;
+}
+
+/* Called by the signal handlers when a decodebin has
  * found a new raw pad.  
  */
 static void
@@ -788,7 +1042,9 @@ new_decoded_pad_cb (GstElement * element, GstPad * pad, gboolean last,
     GstURIDecodeBin * decoder)
 {
   GstPad *newpad;
+  GstPadTemplate *pad_tmpl;
   gchar *padname;
+  GstURIDecodeBinStream *stream;
 
   GST_DEBUG_OBJECT (element, "new decoded pad, name: <%s>. Last: %d",
       GST_PAD_NAME (pad), last);
@@ -798,16 +1054,26 @@ new_decoded_pad_cb (GstElement * element, GstPad * pad, gboolean last,
   decoder->numpads++;
   GST_URI_DECODE_BIN_UNLOCK (decoder);
 
-  newpad = gst_ghost_pad_new (padname, pad);
+  pad_tmpl = gst_static_pad_template_get (&srctemplate);
+  newpad = gst_ghost_pad_new_from_template (padname, pad, pad_tmpl);
+  gst_object_unref (pad_tmpl);
   g_free (padname);
 
   /* store ref to the ghostpad so we can remove it */
   g_object_set_data (G_OBJECT (pad), "uridecodebin.ghostpad", newpad);
 
+  /* add event probe to monitor tags */
+  stream = g_slice_alloc0 (sizeof (GstURIDecodeBinStream));
+  stream->probe_id =
+      gst_pad_add_event_probe (pad, G_CALLBACK (decoded_pad_event_probe),
+      decoder);
+  GST_URI_DECODE_BIN_LOCK (decoder);
+  g_hash_table_insert (decoder->streams, pad, stream);
+  GST_URI_DECODE_BIN_UNLOCK (decoder);
+
   gst_pad_set_active (newpad, TRUE);
   gst_element_add_pad (GST_ELEMENT_CAST (decoder), newpad);
 }
-
 
 static gboolean
 source_pad_event_probe (GstPad * pad, GstEvent * event,
@@ -895,8 +1161,9 @@ array_has_uri_value (const gchar * values[], const gchar * value)
 
 /* list of URIs that we consider to be streams and that need buffering.
  * We have no mechanism yet to figure this out with a query. */
-static const gchar *stream_uris[] = { "http://", "mms://", "mmsh://",
-  "mmsu://", "mmst://", "fd://", "myth://", "ssh://", "ftp://", "sftp://",
+static const gchar *stream_uris[] = { "http://", "https://", "mms://",
+  "mmsh://", "mmsu://", "mmst://", "fd://", "myth://", "ssh://",
+  "ftp://", "sftp://",
   NULL
 };
 
@@ -1133,7 +1400,7 @@ analyse_source (GstURIDecodeBin * decoder, gboolean * is_raw,
         gst_iterator_resync (pads_iter);
         break;
       case GST_ITERATOR_OK:
-        /* we now officially have an ouput pad */
+        /* we now officially have an output pad */
         *have_out = TRUE;
 
         /* if FALSE, this pad has no caps and we continue with the next pad. */
@@ -1260,22 +1527,9 @@ remove_decoders (GstURIDecodeBin * bin, gboolean force)
     bin->pending_decodebins = NULL;
 
   }
-}
 
-static void
-remove_pads (GstURIDecodeBin * bin)
-{
-  GSList *walk;
-
-  for (walk = bin->srcpads; walk; walk = g_slist_next (walk)) {
-    GstPad *pad = GST_PAD_CAST (walk->data);
-
-    GST_DEBUG_OBJECT (bin, "removing old pad");
-    gst_pad_set_active (pad, FALSE);
-    gst_element_remove_pad (GST_ELEMENT_CAST (bin), pad);
-  }
-  g_slist_free (bin->srcpads);
-  bin->srcpads = NULL;
+  /* Don't loose the SOURCE flag */
+  GST_OBJECT_FLAG_SET (bin, GST_ELEMENT_IS_SOURCE);
 }
 
 static void
@@ -1314,6 +1568,21 @@ proxy_autoplug_factories_signal (GstElement * element, GstPad * pad,
       &result);
 
   GST_DEBUG_OBJECT (dec, "autoplug-factories returned %p", result);
+
+  return result;
+}
+
+static GValueArray *
+proxy_autoplug_sort_signal (GstElement * element, GstPad * pad,
+    GstCaps * caps, GValueArray * factories, GstURIDecodeBin * dec)
+{
+  GValueArray *result;
+
+  g_signal_emit (dec,
+      gst_uri_decode_bin_signals[SIGNAL_AUTOPLUG_SORT], 0, pad, caps,
+      factories, &result);
+
+  GST_DEBUG_OBJECT (dec, "autoplug-sort returned %p", result);
 
   return result;
 }
@@ -1362,6 +1631,11 @@ make_decoder (GstURIDecodeBin * decoder)
 
     if (!decodebin)
       goto no_decodebin;
+
+    /* sanity check */
+    if (decodebin->numsinkpads == 0)
+      goto no_typefind;
+
     /* connect signals to proxy */
     g_signal_connect (decodebin, "unknown-type",
         G_CALLBACK (proxy_unknown_type_signal), decoder);
@@ -1369,6 +1643,8 @@ make_decoder (GstURIDecodeBin * decoder)
         G_CALLBACK (proxy_autoplug_continue_signal), decoder);
     g_signal_connect (decodebin, "autoplug-factories",
         G_CALLBACK (proxy_autoplug_factories_signal), decoder);
+    g_signal_connect (decodebin, "autoplug-sort",
+        G_CALLBACK (proxy_autoplug_sort_signal), decoder);
     g_signal_connect (decodebin, "autoplug-select",
         G_CALLBACK (proxy_autoplug_select_signal), decoder);
     g_signal_connect (decodebin, "drained",
@@ -1430,6 +1706,15 @@ make_decoder (GstURIDecodeBin * decoder)
 no_decodebin:
   {
     post_missing_plugin_error (GST_ELEMENT_CAST (decoder), "decodebin2");
+    GST_ELEMENT_ERROR (decoder, CORE, MISSING_PLUGIN, (NULL),
+        ("No decodebin2 element, check your installation"));
+    return NULL;
+  }
+no_typefind:
+  {
+    gst_object_unref (decodebin);
+    GST_ELEMENT_ERROR (decoder, CORE, MISSING_PLUGIN, (NULL),
+        ("No typefind element, decodebin2 is unusable, check your installation"));
     return NULL;
   }
 }
@@ -1451,6 +1736,14 @@ type_found (GstElement * typefind, guint probability,
 
   /* remember if we need download buffering */
   decoder->is_download = IS_DOWNLOAD_MEDIA (media_type) && decoder->download;
+  /* only enable download buffering if the upstream duration is known */
+  if (decoder->is_download) {
+    GstFormat fmt = GST_FORMAT_BYTES;
+    gint64 dur;
+
+    decoder->is_download = (gst_element_query_duration (typefind, &fmt, &dur)
+        && fmt == GST_FORMAT_BYTES && dur != -1);
+  }
 
   dec_elem = make_decoder (decoder);
   if (!dec_elem)
@@ -1461,6 +1754,8 @@ type_found (GstElement * typefind, guint probability,
     goto no_queue2;
 
   g_object_set (queue, "use-buffering", TRUE, NULL);
+  g_object_set (queue, "ring-buffer-max-size", decoder->ring_buffer_max_size,
+      NULL);
 
   GST_DEBUG_OBJECT (decoder, "check media-type %s, %d", media_type,
       decoder->download);
@@ -1511,6 +1806,8 @@ type_found (GstElement * typefind, guint probability,
   if (!gst_element_link_pads (queue, "src", dec_elem, "sink"))
     goto could_not_link;
 
+  /* PLAYING in one go might fail (see bug #632782) */
+  gst_element_set_state (dec_elem, GST_STATE_PAUSED);
   gst_element_set_state (dec_elem, GST_STATE_PLAYING);
   gst_element_set_state (queue, GST_STATE_PLAYING);
 
@@ -1571,6 +1868,8 @@ setup_streaming (GstURIDecodeBin * decoder)
 no_typefind:
   {
     post_missing_plugin_error (GST_ELEMENT_CAST (decoder), "typefind");
+    GST_ELEMENT_ERROR (decoder, CORE, MISSING_PLUGIN, (NULL),
+        ("No typefind element, check your installation"));
     return FALSE;
   }
 could_not_link:
@@ -1578,8 +1877,16 @@ could_not_link:
     GST_ELEMENT_ERROR (decoder, CORE, NEGOTIATION,
         (NULL), ("Can't link source to typefind element"));
     gst_bin_remove (GST_BIN_CAST (decoder), typefind);
+    /* Don't loose the SOURCE flag */
+    GST_OBJECT_FLAG_SET (decoder, GST_ELEMENT_IS_SOURCE);
     return FALSE;
   }
+}
+
+static void
+free_stream (gpointer value)
+{
+  g_slice_free (GstURIDecodeBinStream, value);
 }
 
 /* remove source and all related elements */
@@ -1591,7 +1898,6 @@ remove_source (GstURIDecodeBin * bin)
   if (source) {
     GST_DEBUG_OBJECT (bin, "removing old src element");
     gst_element_set_state (source, GST_STATE_NULL);
-    gst_bin_remove (GST_BIN_CAST (bin), source);
 
     if (bin->src_np_sig_id) {
       g_signal_handler_disconnect (source, bin->src_np_sig_id);
@@ -1601,6 +1907,7 @@ remove_source (GstURIDecodeBin * bin)
       g_signal_handler_disconnect (source, bin->src_nmp_sig_id);
       bin->src_nmp_sig_id = 0;
     }
+    gst_bin_remove (GST_BIN_CAST (bin), source);
     bin->source = NULL;
   }
   if (bin->queue) {
@@ -1615,6 +1922,12 @@ remove_source (GstURIDecodeBin * bin)
     gst_bin_remove (GST_BIN_CAST (bin), bin->typefind);
     bin->typefind = NULL;
   }
+  if (bin->streams) {
+    g_hash_table_destroy (bin->streams);
+    bin->streams = NULL;
+  }
+  /* Don't loose the SOURCE flag */
+  GST_OBJECT_FLAG_SET (bin, GST_ELEMENT_IS_SOURCE);
 }
 
 /* is called when a dynamic source element created a new pad. */
@@ -1701,8 +2014,14 @@ setup_source (GstURIDecodeBin * decoder)
   /* notify of the new source used */
   g_object_notify (G_OBJECT (decoder), "source");
 
+  g_signal_emit (decoder, gst_uri_decode_bin_signals[SIGNAL_SOURCE_SETUP],
+      0, decoder->source);
+
   /* remove the old decoders now, if any */
   remove_decoders (decoder, FALSE);
+
+  /* stream admin setup */
+  decoder->streams = g_hash_table_new_full (NULL, NULL, NULL, free_stream);
 
   /* see if the source element emits raw audio/video all by itself,
    * if so, we can create streams for the pads and be done with it.
@@ -2170,11 +2489,6 @@ gst_uri_decode_bin_change_state (GstElement * element,
   decoder = GST_URI_DECODE_BIN (element);
 
   switch (transition) {
-    case GST_STATE_CHANGE_NULL_TO_READY:
-      g_mutex_lock (decoder->factories_lock);
-      gst_uri_decode_bin_update_factories_list (decoder);
-      g_mutex_unlock (decoder->factories_lock);
-      break;
     case GST_STATE_CHANGE_READY_TO_PAUSED:
       if (!setup_source (decoder))
         goto source_failed;
@@ -2194,14 +2508,12 @@ gst_uri_decode_bin_change_state (GstElement * element,
     case GST_STATE_CHANGE_PAUSED_TO_READY:
       GST_DEBUG ("paused to ready");
       remove_decoders (decoder, FALSE);
-      remove_pads (decoder);
       remove_source (decoder);
       do_async_done (decoder);
       break;
     case GST_STATE_CHANGE_READY_TO_NULL:
       GST_DEBUG ("ready to null");
       remove_decoders (decoder, TRUE);
-      remove_pads (decoder);
       remove_source (decoder);
       break;
     default:

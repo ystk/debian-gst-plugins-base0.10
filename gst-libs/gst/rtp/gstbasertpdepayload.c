@@ -1,5 +1,5 @@
 /* GStreamer
- * Copyright (C) <2005> Philippe Khalaf <burger@speedy.org> 
+ * Copyright (C) <2005> Philippe Khalaf <burger@speedy.org>
  * Copyright (C) <2005> Nokia Corporation <kai.vehmanen@nokia.com>
  *
  * This library is free software; you can redistribute it and/or
@@ -22,11 +22,7 @@
  * SECTION:gstbasertpdepayload
  * @short_description: Base class for RTP depayloader
  *
- * <refsect2>
- * <para>
  * Provides a base class for RTP depayloaders
- * </para>
- * </refsect2>
  */
 
 #include "gstbasertpdepayload.h"
@@ -97,6 +93,8 @@ static void gst_base_rtp_depayload_set_gst_timestamp
     (GstBaseRTPDepayload * filter, guint32 rtptime, GstBuffer * buf);
 static gboolean gst_base_rtp_depayload_packet_lost (GstBaseRTPDepayload *
     filter, GstEvent * event);
+static gboolean gst_base_rtp_depayload_handle_event (GstBaseRTPDepayload *
+    filter, GstEvent * event);
 
 GST_BOILERPLATE (GstBaseRTPDepayload, gst_base_rtp_depayload, GstElement,
     GST_TYPE_ELEMENT);
@@ -142,6 +140,7 @@ gst_base_rtp_depayload_class_init (GstBaseRTPDepayloadClass * klass)
 
   klass->set_gst_timestamp = gst_base_rtp_depayload_set_gst_timestamp;
   klass->packet_lost = gst_base_rtp_depayload_packet_lost;
+  klass->handle_event = gst_base_rtp_depayload_handle_event;
 
   GST_DEBUG_CATEGORY_INIT (basertpdepayload_debug, "basertpdepayload", 0,
       "Base class for RTP Depayloaders");
@@ -240,10 +239,15 @@ gst_base_rtp_depayload_setcaps (GstPad * pad, GstCaps * caps)
   else
     priv->play_scale = 1.0;
 
-  if (bclass->set_caps)
+  if (bclass->set_caps) {
     res = bclass->set_caps (filter, caps);
-  else
+    if (!res) {
+      GST_WARNING_OBJECT (filter, "Subclass rejected caps %" GST_PTR_FORMAT,
+          caps);
+    }
+  } else {
     res = TRUE;
+  }
 
   priv->negotiated = res;
 
@@ -263,7 +267,7 @@ gst_base_rtp_depayload_chain (GstPad * pad, GstBuffer * in)
   GstClockTime timestamp;
   guint16 seqnum;
   guint32 rtptime;
-  gboolean reset_seq, discont;
+  gboolean discont;
   gint gap;
 
   filter = GST_BASE_RTP_DEPAYLOAD (GST_OBJECT_PARENT (pad));
@@ -278,7 +282,8 @@ gst_base_rtp_depayload_chain (GstPad * pad, GstBuffer * in)
   if (G_UNLIKELY (!gst_rtp_buffer_validate (in)))
     goto invalid_buffer;
 
-  priv->discont = GST_BUFFER_IS_DISCONT (in);
+  if (!priv->discont)
+    priv->discont = GST_BUFFER_IS_DISCONT (in);
 
   timestamp = GST_BUFFER_TIMESTAMP (in);
   /* convert to running_time and save the timestamp, this is the timestamp
@@ -290,7 +295,6 @@ gst_base_rtp_depayload_chain (GstPad * pad, GstBuffer * in)
 
   seqnum = gst_rtp_buffer_get_seq (in);
   rtptime = gst_rtp_buffer_get_timestamp (in);
-  reset_seq = TRUE;
   discont = FALSE;
 
   GST_LOG_OBJECT (filter, "discont %d, seqnum %u, rtptime %u, timestamp %"
@@ -333,6 +337,7 @@ gst_base_rtp_depayload_chain (GstPad * pad, GstBuffer * in)
     /* we detected a seqnum discont but the buffer was not flagged with a discont,
      * set the discont flag so that the subclass can throw away old data. */
     priv->discont = TRUE;
+    in = gst_buffer_make_metadata_writable (in);
     GST_BUFFER_FLAG_SET (in, GST_BUFFER_FLAG_DISCONT);
   }
 
@@ -356,8 +361,22 @@ gst_base_rtp_depayload_chain (GstPad * pad, GstBuffer * in)
 not_negotiated:
   {
     /* this is not fatal but should be filtered earlier */
-    GST_ELEMENT_ERROR (filter, CORE, NEGOTIATION, (NULL),
-        ("Not RTP format was negotiated"));
+    if (GST_BUFFER_CAPS (in) == NULL) {
+      GST_ELEMENT_ERROR (filter, CORE, NEGOTIATION,
+          ("No RTP format was negotiated."),
+          ("Input buffers need to have RTP caps set on them. This is usually "
+              "achieved by setting the 'caps' property of the upstream source "
+              "element (often udpsrc or appsrc), or by putting a capsfilter "
+              "element before the depayloader and setting the 'caps' property "
+              "on that. Also see http://cgit.freedesktop.org/gstreamer/"
+              "gst-plugins-good/tree/gst/rtp/README"));
+    } else {
+      GST_ELEMENT_ERROR (filter, CORE, NEGOTIATION,
+          ("No RTP format was negotiated."),
+          ("RTP caps on input buffer were rejected, most likely because they "
+              "were incomplete or contained wrong values. Check the debug log "
+              "for more information."));
+    }
     gst_buffer_unref (in);
     return GST_FLOW_NOT_NEGOTIATED;
   }
@@ -386,13 +405,11 @@ no_process:
 }
 
 static gboolean
-gst_base_rtp_depayload_handle_sink_event (GstPad * pad, GstEvent * event)
+gst_base_rtp_depayload_handle_event (GstBaseRTPDepayload * filter,
+    GstEvent * event)
 {
-  GstBaseRTPDepayload *filter;
   gboolean res = TRUE;
   gboolean forward = TRUE;
-
-  filter = GST_BASE_RTP_DEPAYLOAD (GST_OBJECT_PARENT (pad));
 
   switch (GST_EVENT_TYPE (event)) {
     case GST_EVENT_FLUSH_STOP:
@@ -453,6 +470,29 @@ gst_base_rtp_depayload_handle_sink_event (GstPad * pad, GstEvent * event)
   return res;
 }
 
+static gboolean
+gst_base_rtp_depayload_handle_sink_event (GstPad * pad, GstEvent * event)
+{
+  gboolean res = FALSE;
+  GstBaseRTPDepayload *filter;
+  GstBaseRTPDepayloadClass *bclass;
+
+  filter = GST_BASE_RTP_DEPAYLOAD (gst_pad_get_parent (pad));
+  if (G_UNLIKELY (filter == NULL)) {
+    gst_event_unref (event);
+    return FALSE;
+  }
+
+  bclass = GST_BASE_RTP_DEPAYLOAD_GET_CLASS (filter);
+  if (bclass->handle_event)
+    res = bclass->handle_event (filter, event);
+  else
+    gst_event_unref (event);
+
+  gst_object_unref (filter);
+  return res;
+}
+
 static GstEvent *
 create_segment_event (GstBaseRTPDepayload * filter, gboolean update,
     GstClockTime position)
@@ -475,30 +515,55 @@ create_segment_event (GstBaseRTPDepayload * filter, gboolean update,
   return event;
 }
 
-static GstFlowReturn
-gst_base_rtp_depayload_push_full (GstBaseRTPDepayload * filter,
-    gboolean do_ts, guint32 rtptime, GstBuffer * out_buf)
+typedef struct
 {
-  GstFlowReturn ret;
-  GstCaps *srccaps;
+  GstBaseRTPDepayload *depayload;
   GstBaseRTPDepayloadClass *bclass;
-  GstBaseRTPDepayloadPrivate *priv;
+  GstCaps *caps;
+  gboolean do_ts;
+  gboolean rtptime;
+} HeaderData;
 
-  priv = filter->priv;
+static GstBufferListItem
+set_headers (GstBuffer ** buffer, guint group, guint idx, HeaderData * data)
+{
+  GstBaseRTPDepayload *depayload = data->depayload;
 
-  /* almost certainly required */
-  out_buf = gst_buffer_make_metadata_writable (out_buf);
-
-  /* set the caps if any */
-  srccaps = GST_PAD_CAPS (filter->srcpad);
-  if (G_LIKELY (srccaps))
-    gst_buffer_set_caps (out_buf, srccaps);
-
-  bclass = GST_BASE_RTP_DEPAYLOAD_GET_CLASS (filter);
+  *buffer = gst_buffer_make_metadata_writable (*buffer);
+  gst_buffer_set_caps (*buffer, data->caps);
 
   /* set the timestamp if we must and can */
-  if (bclass->set_gst_timestamp && do_ts)
-    bclass->set_gst_timestamp (filter, rtptime, out_buf);
+  if (data->bclass->set_gst_timestamp && data->do_ts)
+    data->bclass->set_gst_timestamp (depayload, data->rtptime, *buffer);
+
+  if (G_UNLIKELY (depayload->priv->discont)) {
+    GST_LOG_OBJECT (depayload, "Marking DISCONT on output buffer");
+    GST_BUFFER_FLAG_SET (*buffer, GST_BUFFER_FLAG_DISCONT);
+    depayload->priv->discont = FALSE;
+  }
+
+  return GST_BUFFER_LIST_SKIP_GROUP;
+}
+
+static GstFlowReturn
+gst_base_rtp_depayload_prepare_push (GstBaseRTPDepayload * filter,
+    gboolean do_ts, guint32 rtptime, gboolean is_list, gpointer obj)
+{
+  HeaderData data;
+
+  data.depayload = filter;
+  data.caps = GST_PAD_CAPS (filter->srcpad);
+  data.rtptime = rtptime;
+  data.do_ts = do_ts;
+  data.bclass = GST_BASE_RTP_DEPAYLOAD_GET_CLASS (filter);
+
+  if (is_list) {
+    GstBufferList **blist = obj;
+    gst_buffer_list_foreach (*blist, (GstBufferListFunc) set_headers, &data);
+  } else {
+    GstBuffer **buf = obj;
+    set_headers (buf, 0, 0, &data);
+  }
 
   /* if this is the first buffer send a NEWSEGMENT */
   if (G_UNLIKELY (filter->need_newsegment)) {
@@ -512,20 +577,7 @@ gst_base_rtp_depayload_push_full (GstBaseRTPDepayload * filter,
     GST_DEBUG_OBJECT (filter, "Pushed newsegment event on this first buffer");
   }
 
-  if (G_UNLIKELY (priv->discont)) {
-    GST_LOG_OBJECT (filter, "Marking DISCONT on output buffer");
-    GST_BUFFER_FLAG_SET (out_buf, GST_BUFFER_FLAG_DISCONT);
-    priv->discont = FALSE;
-  }
-
-  /* push it */
-  GST_LOG_OBJECT (filter, "Pushing buffer size %d, timestamp %" GST_TIME_FORMAT,
-      GST_BUFFER_SIZE (out_buf),
-      GST_TIME_ARGS (GST_BUFFER_TIMESTAMP (out_buf)));
-
-  ret = gst_pad_push (filter->srcpad, out_buf);
-
-  return ret;
+  return GST_FLOW_OK;
 }
 
 /**
@@ -548,7 +600,18 @@ GstFlowReturn
 gst_base_rtp_depayload_push_ts (GstBaseRTPDepayload * filter, guint32 timestamp,
     GstBuffer * out_buf)
 {
-  return gst_base_rtp_depayload_push_full (filter, TRUE, timestamp, out_buf);
+  GstFlowReturn res;
+
+  res =
+      gst_base_rtp_depayload_prepare_push (filter, TRUE, timestamp, FALSE,
+      &out_buf);
+
+  if (G_LIKELY (res == GST_FLOW_OK))
+    res = gst_pad_push (filter->srcpad, out_buf);
+  else
+    gst_buffer_unref (out_buf);
+
+  return res;
 }
 
 /**
@@ -568,7 +631,44 @@ gst_base_rtp_depayload_push_ts (GstBaseRTPDepayload * filter, guint32 timestamp,
 GstFlowReturn
 gst_base_rtp_depayload_push (GstBaseRTPDepayload * filter, GstBuffer * out_buf)
 {
-  return gst_base_rtp_depayload_push_full (filter, FALSE, 0, out_buf);
+  GstFlowReturn res;
+
+  res = gst_base_rtp_depayload_prepare_push (filter, FALSE, 0, FALSE, &out_buf);
+
+  if (G_LIKELY (res == GST_FLOW_OK))
+    res = gst_pad_push (filter->srcpad, out_buf);
+  else
+    gst_buffer_unref (out_buf);
+
+  return res;
+}
+
+/**
+ * gst_base_rtp_depayload_push_list:
+ * @filter: a #GstBaseRTPDepayload
+ * @out_list: a #GstBufferList
+ *
+ * Push @out_list to the peer of @filter. This function takes ownership of
+ * @out_list.
+ *
+ * Returns: a #GstFlowReturn.
+ *
+ * Since: 0.10.32
+ */
+GstFlowReturn
+gst_base_rtp_depayload_push_list (GstBaseRTPDepayload * filter,
+    GstBufferList * out_list)
+{
+  GstFlowReturn res;
+
+  res = gst_base_rtp_depayload_prepare_push (filter, TRUE, 0, TRUE, &out_list);
+
+  if (G_LIKELY (res == GST_FLOW_OK))
+    res = gst_pad_push_list (filter->srcpad, out_list);
+  else
+    gst_buffer_list_unref (out_list);
+
+  return res;
 }
 
 /* convert the PacketLost event form a jitterbuffer to a segment update.
@@ -642,6 +742,7 @@ gst_base_rtp_depayload_change_state (GstElement * element,
       priv->play_scale = 1.0;
       priv->next_seqnum = -1;
       priv->negotiated = FALSE;
+      priv->discont = FALSE;
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
       break;

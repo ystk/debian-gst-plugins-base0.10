@@ -47,7 +47,7 @@ GST_DEBUG_CATEGORY (ffmpegcolorspace_performance);
 #define FFMPEGCSP_VIDEO_CAPS						\
   "video/x-raw-yuv, width = "GST_VIDEO_SIZE_RANGE" , "			\
   "height="GST_VIDEO_SIZE_RANGE",framerate="GST_VIDEO_FPS_RANGE","	\
-  "format= (fourcc) { I420 , NV12 , NV21 , YV12 , YUY2 , Y42B , Y444 , YUV9 , YVU9 , Y41B , Y800 , Y8 , GREY , Y16 , UYVY , YVYU , IYU1 , v308 , AYUV } ;" \
+  "format= (fourcc) { I420 , NV12 , NV21 , YV12 , YUY2 , Y42B , Y444 , YUV9 , YVU9 , Y41B , Y800 , Y8 , GREY , Y16 , UYVY , YVYU , IYU1 , v308 , AYUV, A420} ;" \
   GST_VIDEO_CAPS_RGB";"							\
   GST_VIDEO_CAPS_BGR";"							\
   GST_VIDEO_CAPS_RGBx";"						\
@@ -60,6 +60,10 @@ GST_DEBUG_CATEGORY (ffmpegcolorspace_performance);
   GST_VIDEO_CAPS_ABGR";"						\
   GST_VIDEO_CAPS_RGB_16";"						\
   GST_VIDEO_CAPS_RGB_15";"						\
+  "video/x-raw-rgb, bpp = (int)8, depth = (int)8, "                     \
+      "width = "GST_VIDEO_SIZE_RANGE" , "		                \
+      "height = " GST_VIDEO_SIZE_RANGE ", "                             \
+      "framerate = "GST_VIDEO_FPS_RANGE ";"                             \
   GST_VIDEO_CAPS_GRAY8";"						\
   GST_VIDEO_CAPS_GRAY16("BIG_ENDIAN")";"				\
   GST_VIDEO_CAPS_GRAY16("LITTLE_ENDIAN")";"
@@ -109,6 +113,7 @@ gst_ffmpegcsp_caps_remove_format_info (GstCaps * caps)
 
   rgbst = gst_structure_copy (yuvst);
   gst_structure_set_name (rgbst, "video/x-raw-rgb");
+  gst_structure_remove_fields (rgbst, "color-matrix", "chroma-site", NULL);
 
   grayst = gst_structure_copy (rgbst);
   gst_structure_set_name (grayst, "video/x-raw-gray");
@@ -336,10 +341,10 @@ gst_ffmpegcsp_base_init (gpointer klass)
 {
   GstElementClass *element_class = GST_ELEMENT_CLASS (klass);
 
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&gst_ffmpegcsp_src_template));
-  gst_element_class_add_pad_template (element_class,
-      gst_static_pad_template_get (&gst_ffmpegcsp_sink_template));
+  gst_element_class_add_static_pad_template (element_class,
+      &gst_ffmpegcsp_src_template);
+  gst_element_class_add_static_pad_template (element_class,
+      &gst_ffmpegcsp_sink_template);
 
   gst_element_class_set_details_simple (element_class,
       "FFMPEG Colorspace converter", "Filter/Converter/Video",

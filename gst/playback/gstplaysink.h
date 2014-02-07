@@ -41,11 +41,11 @@ G_BEGIN_DECLS
 
 /**
  * GstPlaySinkType:
- * @GST_PLAY_SINK_TYPE_AUDIO: A non-raw audio pad
- * @GST_PLAY_SINK_TYPE_AUDIO_RAW: a raw audio pad
- * @GST_PLAY_SINK_TYPE_VIDEO: a non-raw video pad
- * @GST_PLAY_SINK_TYPE_VIDEO_RAW: a raw video pad
- * @GST_PLAY_SINK_TYPE_TEXT: a raw text pad
+ * @GST_PLAY_SINK_TYPE_AUDIO: an audio pad
+ * @GST_PLAY_SINK_TYPE_AUDIO_RAW: a raw audio pad. Deprecated.
+ * @GST_PLAY_SINK_TYPE_VIDEO: a video pad
+ * @GST_PLAY_SINK_TYPE_VIDEO_RAW: a raw video pad. Deprecated.
+ * @GST_PLAY_SINK_TYPE_TEXT: a text pad
  * @GST_PLAY_SINK_TYPE_LAST: the last type
  * @GST_PLAY_SINK_TYPE_FLUSHING: a flushing pad, used when shutting down
  *
@@ -100,6 +100,13 @@ GstBuffer *      gst_play_sink_convert_frame  (GstPlaySink * playsink, GstCaps *
 gboolean         gst_play_sink_reconfigure    (GstPlaySink * playsink);
 
 gboolean         gst_play_sink_plugin_init    (GstPlugin * plugin);
+
+void
+gst_play_marshal_BUFFER__BOXED (GClosure * closure,
+    GValue * return_value G_GNUC_UNUSED,
+    guint n_param_values,
+    const GValue * param_values,
+    gpointer invocation_hint G_GNUC_UNUSED, gpointer marshal_data);
 
 G_END_DECLS
 

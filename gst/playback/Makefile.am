@@ -6,9 +6,9 @@ glib_gen_basename = gstplay
 built_sources = gstplay-marshal.c
 built_headers = gstplay-marshal.h
 
-plugindir = $(libdir)/gstreamer-@GST_MAJORMINOR@
-
 plugin_LTLIBRARIES = libgstplaybin.la libgstdecodebin.la libgstdecodebin2.la
+
+csp_cflags = -DCOLORSPACE=\"ffmpegcolorspace\"
 
 libgstplaybin_la_SOURCES = \
 	gstplayback.c \
@@ -17,15 +17,16 @@ libgstplaybin_la_SOURCES = \
 	gstplaysink.c \
 	gstplaybasebin.c \
 	gstplay-enum.c \
-	gstfactorylists.c \
-	gstinputselector.c \
-	gstscreenshot.c \
 	gststreaminfo.c \
 	gststreamselector.c \
-	gstsubtitleoverlay.c
+	gstsubtitleoverlay.c \
+	gstplaysinkvideoconvert.c \
+	gstplaysinkaudioconvert.c \
+	gstplaysinkconvertbin.c \
+	gststreamsynchronizer.c
 
 nodist_libgstplaybin_la_SOURCES = $(built_sources)
-libgstplaybin_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS)
+libgstplaybin_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS) $(csp_cflags)
 libgstplaybin_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)
 libgstplaybin_la_LIBADD = \
 	$(top_builddir)/gst-libs/gst/pbutils/libgstpbutils-@GST_MAJORMINOR@.la \
@@ -36,16 +37,16 @@ libgstplaybin_la_LIBTOOLFLAGS = --tag=disable-static
 
 libgstdecodebin_la_SOURCES = gstdecodebin.c
 nodist_libgstdecodebin_la_SOURCES = $(built_sources)
-libgstdecodebin_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS)
+libgstdecodebin_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS) $(csp_cflags)
 libgstdecodebin_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)
 libgstdecodebin_la_LIBADD = \
 	$(top_builddir)/gst-libs/gst/pbutils/libgstpbutils-@GST_MAJORMINOR@.la \
 	$(GST_LIBS)
 libgstdecodebin_la_LIBTOOLFLAGS = --tag=disable-static
 
-libgstdecodebin2_la_SOURCES = gstdecodebin2.c gsturidecodebin.c gstfactorylists.c gstplay-enum.c
+libgstdecodebin2_la_SOURCES = gstdecodebin2.c gsturidecodebin.c gstplay-enum.c
 nodist_libgstdecodebin2_la_SOURCES = $(built_sources)
-libgstdecodebin2_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS)
+libgstdecodebin2_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_CFLAGS) $(csp_cflags)
 libgstdecodebin2_la_LDFLAGS = $(GST_PLUGIN_LDFLAGS)
 libgstdecodebin2_la_LIBADD = \
 	$(top_builddir)/gst-libs/gst/pbutils/libgstpbutils-@GST_MAJORMINOR@.la \
@@ -57,39 +58,14 @@ noinst_HEADERS = \
 	gstplaybasebin.h \
 	gstplaysink.h \
 	gststreaminfo.h \
-	gstfactorylists.h \
-	gstinputselector.h \
 	gstplay-enum.h \
-	gstscreenshot.h \
 	gststreamselector.h \
 	gstrawcaps.h \
-	gstsubtitleoverlay.h
-
-noinst_PROGRAMS = test decodetest test2 test3 test4 test5 test6 test7
-
-test_LDADD = $(GST_LIBS) 
-test_CFLAGS = $(GST_CFLAGS)
-
-test2_LDADD = $(GST_LIBS) 
-test2_CFLAGS = $(GST_CFLAGS)
-
-test3_LDADD = $(GST_LIBS) 
-test3_CFLAGS = $(GST_CFLAGS)
-
-test4_LDADD = $(GST_LIBS) 
-test4_CFLAGS = $(GST_CFLAGS)
-
-test5_LDADD = $(GST_LIBS) 
-test5_CFLAGS = $(GST_CFLAGS)
-
-test6_LDADD = $(GST_LIBS) 
-test6_CFLAGS = $(GST_CFLAGS)
-
-test7_LDADD = $(GST_LIBS) 
-test7_CFLAGS = $(GST_CFLAGS)
-
-decodetest_LDADD = $(GST_LIBS) 
-decodetest_CFLAGS = $(GST_CFLAGS)
+	gstsubtitleoverlay.h \
+	gstplaysinkvideoconvert.h \
+	gstplaysinkaudioconvert.h \
+	gstplaysinkconvertbin.h \
+	gststreamsynchronizer.h
 
 BUILT_SOURCES = $(built_headers) $(built_sources)
 
@@ -99,3 +75,41 @@ CLEANFILES = $(BUILT_SOURCES)
 
 include $(top_srcdir)/common/gst-glib-gen.mak
 
+Android.mk: Makefile.am $(BUILT_SOURCES)
+	androgenizer \
+	-:PROJECT libgstdecodebin -:SHARED libgstdecodebin \
+	 -:TAGS eng debug \
+         -:REL_TOP $(top_srcdir) -:ABS_TOP $(abs_top_srcdir) \
+	 -:SOURCES $(libgstdecodebin_la_SOURCES) \
+	           $(nodist_libgstdecodebin_la_SOURCES) \
+	 -:CFLAGS $(DEFS) $(DEFAULT_INCLUDES) $(libgstdecodebin_la_CFLAGS) $(csp_cflags) \
+	 -:LDFLAGS $(libgstdecodebin_la_LDFLAGS) \
+	           $(libgstdecodebin_la_LIBADD) \
+	           -ldl \
+	 -:PASSTHROUGH LOCAL_ARM_MODE:=arm \
+		       LOCAL_MODULE_PATH:='$$(TARGET_OUT)/lib/gstreamer-0.10' \
+	 \
+	-:PROJECT libgstdecodebin2 -:SHARED libgstdecodebin2 \
+	 -:TAGS eng debug \
+         -:REL_TOP $(top_srcdir) -:ABS_TOP $(abs_top_srcdir) \
+	 -:SOURCES $(libgstdecodebin2_la_SOURCES) \
+	           $(nodist_libgstdecodebin2_la_SOURCES) \
+	 -:CFLAGS $(DEFS) $(DEFAULT_INCLUDES) $(libgstdecodebin2_la_CFLAGS) $(csp_cflags) \
+	 -:LDFLAGS $(libgstdecodebin2_la_LDFLAGS) \
+	           $(libgstdecodebin2_la_LIBADD) \
+	           -ldl \
+	 -:PASSTHROUGH LOCAL_ARM_MODE:=arm \
+		       LOCAL_MODULE_PATH:='$$(TARGET_OUT)/lib/gstreamer-0.10' \
+	 \
+	-:PROJECT libgstplaybin -:SHARED libgstplaybin \
+	 -:TAGS eng debug \
+         -:REL_TOP $(top_srcdir) -:ABS_TOP $(abs_top_srcdir) \
+	 -:SOURCES $(libgstplaybin_la_SOURCES) \
+	           $(nodist_libgstplaybin_la_SOURCES) \
+	 -:CFLAGS $(DEFS) $(DEFAULT_INCLUDES) $(libgstplaybin_la_CFLAGS) $(csp_cflags) \
+	 -:LDFLAGS $(libgstplaybin_la_LDFLAGS) \
+	           $(libgstplaybin_la_LIBADD) \
+	           -ldl \
+	 -:PASSTHROUGH LOCAL_ARM_MODE:=arm \
+		       LOCAL_MODULE_PATH:='$$(TARGET_OUT)/lib/gstreamer-0.10' \
+	> $@
