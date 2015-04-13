@@ -1,3 +1,30 @@
+gst-plugins-base0.10 (0.10.36-2) unstable; urgency=medium
+
+  * Thanks for the NMUs
+  * 0001-audiodecoder-don-t-discard-timestamps-when-consecuti.patch:
+    Cherry-pick from upstream to hopefully fix more mp3 to ogg transitions.
+
+ -- Iain Lane <laney@debian.org>  Thu, 18 Sep 2014 15:50:55 +0100
+
+gst-plugins-base0.10 (0.10.36-1.3) unstable; urgency=medium
+
+  * Non-maintainer upload to fix the previous one.
+    + debian/patches/20_fix-speex-sse-gcc-4.9.patch: new patch from
+      upstream to fix FTBFS on i386 with gcc 4.9.
+
+ -- Aurelien Jarno <aurel32@debian.org>  Thu, 28 Aug 2014 21:39:29 +0000
+
+gst-plugins-base0.10 (0.10.36-1.2) unstable; urgency=medium
+
+  * Non-maintainer upload with maintainer permission.
+    + debian/rules: also run libtoolize as part of dh-autoreconf (Closes:
+    #759532).
+    + patches/99_ltmain_as-needed.patch: remove as dh-autreconf will
+    regenerate this file with -Wl,--as-needed which is now the default in
+    Debian.
+
+ -- Aurelien Jarno <aurel32@debian.org>  Thu, 28 Aug 2014 21:03:53 +0200
+
 gst-plugins-base0.10 (0.10.36-1.1) unstable; urgency=low
 
   * Non-maintainer upload.
